@@ -6,15 +6,26 @@
     <ManagedPath>$(CSII_MANAGEDPATH)</ManagedPath>
     <AssemblySearchPaths>$(AssemblySearchPaths);$(ManagedPath)</AssemblySearchPaths>
   </PropertyGroup>
-
+  <ItemGroup>
+    <Reference Include="Newtonsoft.Json"><Private>false</Private></Reference>
+  </ItemGroup>
   <ItemGroup>
     <Reference Include="Game"><Private>false</Private></Reference>
+    <Reference Include="Game.City"><Private>false</Private></Reference>
+    <Reference Include="Game.Common"><Private>false</Private></Reference>
+    <Reference Include="Game.Economy"><Private>false</Private></Reference>
+    <Reference Include="Game.Modding"><Private>false</Private></Reference>
+    <Reference Include="Game.Simulation"><Private>false</Private></Reference>
+    <Reference Include="Game.Net"><Private>false</Private></Reference>
+  
     <Reference Include="Colossal.Core"><Private>false</Private></Reference>
     <Reference Include="Colossal.Logging"><Private>false</Private></Reference>
     <Reference Include="Colossal.IO.AssetDatabase"><Private>false</Private></Reference>
     <Reference Include="Colossal.UI"><Private>false</Private></Reference>
     <Reference Include="Colossal.UI.Binding"><Private>false</Private></Reference>
     <Reference Include="Colossal.Localization"><Private>false</Private></Reference>
+    <Reference Include="Colossal.Mathematics"><Private>false</Private></Reference>
+  
     <Reference Include="UnityEngine.CoreModule"><Private>false</Private></Reference>
     <Reference Include="Unity.Burst"><Private>false</Private></Reference>
     <Reference Include="Unity.Collections"><Private>false</Private></Reference>
