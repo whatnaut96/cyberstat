@@ -16,6 +16,9 @@ using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Newtonsoft.Json;
+using MQTTnet;
+using MQTTnet.Formatter;
+using MQTTnet.Protocol;
 
 namespace Telex
 {
@@ -29,6 +32,7 @@ namespace Telex
         }
 
         public void OnDispose() { }
+
     }
 
     public partial class TelexSystem : GameSystemBase
@@ -49,7 +53,10 @@ namespace Telex
 
         private uint m_LastHour;
         private const uint kFramesPerHour = 262144 / 24;
-        private const string kOutputPath = @"Z:\home\khill\Documents\Repositories\telex\telex.jsonl";
+        
+        private IMqttClient m_MqttClient;
+        private const string kMqttHost = "localhost";
+        private const int kMqttPortL 1883;
 
         // MoveAwayReason enum order (0=None, skip)
         // 1=NoSuitableProperty, 2=NotHappy, 3=NoAdults, 4=NoMoney
@@ -105,7 +112,70 @@ namespace Telex
             ComponentType.ReadOnly<Game.Prefabs.DemandParameterData>()
         );
             m_LastHour = uint.MaxValue;
+
+            ConnectMqtt();
         }
+
+        protected override void OnDestroy()
+        {
+            if (m_MqttClient != null && m_MqttClient.IsConnected)
+            {
+                m_MqttClient.DisconnectAsync(
+                    new MqttClientDisconnectOptionsBuilder()
+                        .WithReason(MqttClientDisconnectOptionsReason.NormalDisconnection)
+                        .Build()
+                ).GetAwaiter().GetResult();
+            }
+            m_MqttClient?.Dispose();
+            base.OnDestroy();
+        }
+
+        private void ConnectMqtt()
+        {
+            try
+            {
+                var mqttFactory = new MqttClientFactory();
+                m_MqttClient = mqttFactory.CreateMqttClient();
+                var options = new MqttClientOptionsBuilder()
+                    .WithTcpServer(kMqttHost, kMqttPort)
+                    .WithProtocolVersion(MqttProtocolVersion.V500)
+                    .Build();
+                m_MqttClient.ConnectAsync(options).GetAwaiter().GetResult();
+                Mod.log.Info("Telex: MQTT connected.");
+            } 
+            catch (Exception ex)
+            {
+                Mod.log.Error($"Telex: MQTT connection failed: {ex.Message}");
+                m_MqttClient = null;
+            }
+        }
+
+        private void Publish(string topic, object payload)
+        {
+            if (m_MqttClient == null || !m_MqttClient.IsConnected)
+            {
+                Mod.log.Warn("Telex: MQTT not connected, attempting reconnect...");
+                ConnectMqtt();
+                if (m_MqttClient == null || !m_MqttClient.IsConnected)
+                    return;
+            }
+
+            try
+            {
+                var json = JsonSerializer.Serialize(payload);
+                var message = new MqttApplicationMessageBuilder()
+                    .WithTopic(topic)
+                    .WithPayload(Encoding.UTF8.GetBytes(json))
+                    .Build();
+
+                m_MqttClient.PublishAsync(message).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Mod.log.Error($"Telex: Failed to publish to {topic}: {ex.Message}");
+            }
+        }
+
 
         protected override void OnUpdate()
         {
@@ -242,8 +312,7 @@ namespace Telex
                 cargo_airplane = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountAirplane),
                 cargo_truck = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTruck),
             };
-
-            File.AppendAllText(kOutputPath, JsonConvert.SerializeObject(snapshot) + "\n");
+            Publish("telex-daily", snapshot);
         }
 
         private void WriteGraphSnapshot(int absoluteDay, DateTime currentDate)
@@ -302,8 +371,7 @@ namespace Telex
                 calendar_day = currentDate.Day,
                 edges = records 
             };
-            File.AppendAllText(kOutputPath, JsonConvert.SerializeObject(graphSnapshot) + "\n");
-
+            Publish("telex-graph", snapshot);
             edges.Dispose();
         }
 
@@ -338,7 +406,8 @@ namespace Telex
                 residential_building_demand_high = m_ResidentialDemandSystem.buildingDemand.z,
             };
 
-            File.AppendAllText(kOutputPath, JsonConvert.SerializeObject(snapshot) + "\n");
+            Publish("telex-graph", snapshot);
+
         }
 
 
@@ -459,7 +528,7 @@ namespace Telex
                 buildings = records
             };
 
-            File.AppendAllText(kOutputPath, JsonConvert.SerializeObject(snapshot) + "\n");
+            Publish("telex-buildings", snapshot);
             buildings.Dispose();
         }
     }
