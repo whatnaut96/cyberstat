@@ -12,12 +12,14 @@ using Game.Simulation;
 using Game.Tools;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Newtonsoft.Json;
 using MQTTnet;
 using MQTTnet.Formatter;
+using MQTTnet.Client;
 using MQTTnet.Protocol;
 
 namespace Telex
@@ -53,10 +55,10 @@ namespace Telex
 
         private uint m_LastHour;
         private const uint kFramesPerHour = 262144 / 24;
-        
+
         private IMqttClient m_MqttClient;
         private const string kMqttHost = "localhost";
-        private const int kMqttPortL 1883;
+        private const int kMqttPort = 1883;
 
         // MoveAwayReason enum order (0=None, skip)
         // 1=NoSuitableProperty, 2=NotHappy, 3=NoAdults, 4=NoMoney
@@ -134,7 +136,7 @@ namespace Telex
         {
             try
             {
-                var mqttFactory = new MqttClientFactory();
+                var mqttFactory = new MqttFactory();
                 m_MqttClient = mqttFactory.CreateMqttClient();
                 var options = new MqttClientOptionsBuilder()
                     .WithTcpServer(kMqttHost, kMqttPort)
@@ -142,7 +144,7 @@ namespace Telex
                     .Build();
                 m_MqttClient.ConnectAsync(options).GetAwaiter().GetResult();
                 Mod.log.Info("Telex: MQTT connected.");
-            } 
+            }
             catch (Exception ex)
             {
                 Mod.log.Error($"Telex: MQTT connection failed: {ex.Message}");
@@ -162,7 +164,29 @@ namespace Telex
 
             try
             {
-                var json = JsonSerializer.Serialize(payload);
+                var json = JsonConvert.SerializeObject(payload);
+                var message = new MqttApplicationMessageBuilder()
+                    .WithTopic(topic)
+                    .WithPayload(Encoding.UTF8.GetBytes(json))
+                    .Build();
+
+                m_MqttClient.PublishAsync(message).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Mod.log.Error($"Telex: Failed to publish to {topic}: {ex.Message}");
+            }
+            if (m_MqttClient == null || !m_MqttClient.IsConnected)
+            {
+                Mod.log.Warn("Telex: MQTT not connected, attempting reconnect...");
+                ConnectMqtt();
+                if (m_MqttClient == null || !m_MqttClient.IsConnected)
+                    return;
+            }
+
+            try
+            {
+                var json = JsonConvert.SerializeObject(payload);
                 var message = new MqttApplicationMessageBuilder()
                     .WithTopic(topic)
                     .WithPayload(Encoding.UTF8.GetBytes(json))
@@ -337,7 +361,8 @@ namespace Telex
                     var coverage = EntityManager.GetBuffer<Game.Net.ServiceCoverage>(edgeEntity);
                     for (int i = 0; i < coverage.Length; i++)
                     {
-                        coverageList.Add(new {
+                        coverageList.Add(new
+                        {
                             service = i,
                             min = coverage[i].m_Coverage.x,
                             max = coverage[i].m_Coverage.y
@@ -345,7 +370,8 @@ namespace Telex
                     }
                 }
 
-                records.Add(new {
+                records.Add(new
+                {
                     entity = edgeEntity.Index,
                     version = edgeEntity.Version,
                     start_entity = edge.m_Start.Index,
@@ -361,17 +387,18 @@ namespace Telex
                 });
             }
 
-            var graphSnapshot = new { 
-                type = "graph", 
+            var graphSnapshot = new
+            {
+                type = "graph",
                 city_name = m_CityConfigurationSystem.cityName,
                 day = absoluteDay,
                 year = currentDate.Year,
                 month = currentDate.Month,
                 hour = currentDate.Hour,
                 calendar_day = currentDate.Day,
-                edges = records 
+                edges = records
             };
-            Publish("telex-graph", snapshot);
+            Publish("telex-graph", graphSnapshot);
             edges.Dispose();
         }
 
@@ -406,7 +433,7 @@ namespace Telex
                 residential_building_demand_high = m_ResidentialDemandSystem.buildingDemand.z,
             };
 
-            Publish("telex-graph", snapshot);
+            Publish("telex-demand", snapshot);
 
         }
 
@@ -452,15 +479,16 @@ namespace Telex
                     : "other";
 
                 bool hasBuildingData = EntityManager.HasComponent<Game.Prefabs.BuildingData>(prefab);
-                    Game.Prefabs.BuildingData prefabBuildingData = hasBuildingData 
-                        ? EntityManager.GetComponentData<Game.Prefabs.BuildingData>(prefab) 
-                        : default;
+                Game.Prefabs.BuildingData prefabBuildingData = hasBuildingData
+                    ? EntityManager.GetComponentData<Game.Prefabs.BuildingData>(prefab)
+                    : default;
 
                 object schoolRecord = null;
                 if (schoolDataLookup.HasComponent(prefab))
                 {
                     var school = schoolDataLookup[prefab];
-                    schoolRecord = new {
+                    schoolRecord = new
+                    {
                         student_capacity = school.m_StudentCapacity,
                         education_level = (int)school.m_EducationLevel,
                         graduation_modifier = school.m_GraduationModifier,
@@ -473,7 +501,8 @@ namespace Telex
                 if (hospitalDataLookup.HasComponent(prefab))
                 {
                     var hospital = hospitalDataLookup[prefab];
-                    hospitalRecord = new {
+                    hospitalRecord = new
+                    {
                         patient_capacity = hospital.m_PatientCapacity,
                         ambulance_capacity = hospital.m_AmbulanceCapacity,
                         helicopter_capacity = hospital.m_MedicalHelicopterCapacity,
@@ -483,7 +512,8 @@ namespace Telex
                     };
                 }
 
-                records.Add(new {
+                records.Add(new
+                {
                     entity = buildingEntity.Index,
                     version = buildingEntity.Version,
                     prefab = prefab.Index,
@@ -499,12 +529,14 @@ namespace Telex
                     level = isSpawnable ? (int)spawnableLookup[prefab].m_Level : 0,
                     service_available = hasService ? serviceAvailableLookup[buildingEntity].m_ServiceAvailable : 0,
                     service_mean_priority = hasService ? serviceAvailableLookup[buildingEntity].m_MeanPriority : 0f,
-                    electricity = hasElectricity ? new {
+                    electricity = hasElectricity ? new
+                    {
                         wanted = electricityLookup[buildingEntity].m_WantedConsumption,
                         fulfilled = electricityLookup[buildingEntity].m_FulfilledConsumption,
                         connected = electricityLookup[buildingEntity].electricityConnected
                     } : null,
-                    water = hasWater ? new {
+                    water = hasWater ? new
+                    {
                         wanted = waterLookup[buildingEntity].m_WantedConsumption,
                         fulfilled_fresh = waterLookup[buildingEntity].m_FulfilledFresh,
                         fulfilled_sewage = waterLookup[buildingEntity].m_FulfilledSewage,
@@ -517,7 +549,8 @@ namespace Telex
                 });
             }
 
-            var snapshot = new {
+            var snapshot = new
+            {
                 type = "buildings",
                 city_name = m_CityConfigurationSystem.cityName,
                 day = absoluteDay,

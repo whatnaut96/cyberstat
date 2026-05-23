@@ -10,6 +10,9 @@
     <Reference Include="Newtonsoft.Json"><Private>false</Private></Reference>
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="MQTTnet" Version="4.3.7.1207" />
+  </ItemGroup>
+  <ItemGroup>
     <Reference Include="Game"><Private>false</Private></Reference>
     <Reference Include="Game.City"><Private>false</Private></Reference>
     <Reference Include="Game.Common"><Private>false</Private></Reference>
