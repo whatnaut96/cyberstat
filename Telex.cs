@@ -257,11 +257,8 @@ namespace Telex
                 type = "daily",
                 city_name = m_CityConfigurationSystem.cityName,
                 day = absoluteDay,
-                year = currentDate.Year,
-                month = currentDate.Month,
-                hour = currentDate.Hour,
-                calendar_day = currentDate.Day,
-
+                date = currentDate,
+                
                 // Population
                 population = pop.m_Population,
                 population_with_move_in = pop.m_PopulationWithMoveIn,
@@ -416,10 +413,7 @@ namespace Telex
                 type = "graph",
                 city_name = m_CityConfigurationSystem.cityName,
                 day = absoluteDay,
-                year = currentDate.Year,
-                month = currentDate.Month,
-                hour = currentDate.Hour,
-                calendar_day = currentDate.Day,
+                current_date = currentDate,
                 edges = records
             };
             Publish("telex-graph", graphSnapshot);
@@ -433,11 +427,8 @@ namespace Telex
                 type = "demand",
                 city_name = m_CityConfigurationSystem.cityName,
                 day = absoluteDay,
-                year = currentDate.Year,
-                month = currentDate.Month,
-                calendar_day = currentDate.Day,
-                hour = currentDate.Hour,
-
+                current_date = currentDate,
+                
                 // Commercial
                 commercial_company_demand = m_CommercialDemandSystem.companyDemand,
                 commercial_building_demand = m_CommercialDemandSystem.buildingDemand,
@@ -578,10 +569,7 @@ namespace Telex
                 type = "buildings",
                 city_name = m_CityConfigurationSystem.cityName,
                 day = absoluteDay,
-                year = currentDate.Year,
-                month = currentDate.Month,
-                calendar_day = currentDate.Day,
-                hour = currentDate.Hour,
+                current_date = currentDate,
                 buildings = records
             };
 
