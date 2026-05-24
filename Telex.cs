@@ -154,28 +154,7 @@ namespace Telex
 
         private void Publish(string topic, object payload)
         {
-            if (m_MqttClient == null || !m_MqttClient.IsConnected)
-            {
-                Mod.log.Warn("Telex: MQTT not connected, attempting reconnect...");
-                ConnectMqtt();
-                if (m_MqttClient == null || !m_MqttClient.IsConnected)
-                    return;
-            }
-
-            try
-            {
-                var json = JsonConvert.SerializeObject(payload);
-                var message = new MqttApplicationMessageBuilder()
-                    .WithTopic(topic)
-                    .WithPayload(Encoding.UTF8.GetBytes(json))
-                    .Build();
-
-                m_MqttClient.PublishAsync(message).GetAwaiter().GetResult();
-            }
-            catch (Exception ex)
-            {
-                Mod.log.Error($"Telex: Failed to publish to {topic}: {ex.Message}");
-            }
+           
             if (m_MqttClient == null || !m_MqttClient.IsConnected)
             {
                 Mod.log.Warn("Telex: MQTT not connected, attempting reconnect...");
@@ -220,6 +199,23 @@ namespace Telex
             WriteDemandSnapshot(absoluteDay, currentDate);
         }
 
+        public static int GetTaxRateForResource(TaxAreaType areaType, int rawResourceInt, NativeArray<int> taxRates)
+        {
+            Resource resourceEnum = (Resource)rawResourceInt; 
+
+            int resourceIndex = EconomyUtils.GetResourceIndex(resourceEnum);
+            if (resourceIndex == -1) return 0;
+
+            return areaType switch
+            {
+                TaxAreaType.Residential => taxRates[(int)TaxAreaType.Residential] + taxRates[5 + rawResourceInt], // jobLevel directly
+                TaxAreaType.Commercial  => taxRates[(int)TaxAreaType.Commercial]  + taxRates[10 + resourceIndex],
+                TaxAreaType.Industrial  => taxRates[(int)TaxAreaType.Industrial]  + taxRates[10 + resourceIndex],
+                TaxAreaType.Office      => taxRates[(int)TaxAreaType.Office]      + taxRates[10 + resourceIndex],
+                _ => 0
+            };
+        }
+
         private void WriteDailySnapshot(int absoluteDay, DateTime currentDate)
         {
             Population pop = EntityManager.GetComponentData<Population>(m_CitySystem.City);
@@ -230,6 +226,30 @@ namespace Telex
             {
                 int idx = EconomyUtils.GetResourceIndex(resource);
                 tradeByResource[resource.ToString()] = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Trade, idx);
+            }
+
+            m_TaxSystem.Update();
+            Unity.Collections.NativeArray<int> taxRates = m_TaxSystem.GetTaxRates();
+            
+            var residentialTaxes = new List<int>();
+            for (int lvl = 0; lvl <= 4; lvl++) {
+                residentialTaxes.Add(taxRates[(int)TaxAreaType.Residential] + taxRates[5 + lvl]);
+            }
+
+            var commercialTaxes = new Dictionary<string, int>();
+            var industrialTaxes = new Dictionary<string, int>();
+            var officeTaxes = new Dictionary<string, int>();
+
+            foreach (var resource in kTradeResources)
+            {
+                int resourceIndex = EconomyUtils.GetResourceIndex(resource);
+                if (resourceIndex != -1)
+                {
+                    string resourceName = resource.ToString().ToLower();
+                    commercialTaxes[resourceName] = taxRates[(int)TaxAreaType.Commercial] + taxRates[10 + resourceIndex];
+                    industrialTaxes[resourceName] = taxRates[(int)TaxAreaType.Industrial] + taxRates[10 + resourceIndex];
+                    officeTaxes[resourceName]     = taxRates[(int)TaxAreaType.Office]     + taxRates[10 + resourceIndex];
+                }
             }
 
             var snapshot = new
@@ -295,12 +315,16 @@ namespace Telex
                 lodging_total = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingTotal),
                 lodging_used = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingUsed),
                 trade_by_resource = tradeByResource,
-
+                
                 // Taxable income by sector
                 residential_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ResidentialTaxableIncome),
                 commercial_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CommercialTaxableIncome),
                 industrial_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.IndustrialTaxableIncome),
                 office_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.OfficeTaxableIncome),
+                tax_rates_residential = residentialTaxes,
+                tax_rates_commercial  = commercialTaxes,
+                tax_rates_industrial  = industrialTaxes,
+                tax_rates_office      = officeTaxes,
 
                 // Employment
                 workers = m_CityStatisticsSystem.GetStatisticValue(StatisticType.WorkerCount),
