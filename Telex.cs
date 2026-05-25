@@ -59,6 +59,7 @@ namespace Telex
         private IMqttClient m_MqttClient;
         private const string kMqttHost = "localhost";
         private const int kMqttPort = 1883;
+        private bool m_IsFirstFrame = true;
 
         // MoveAwayReason enum order (0=None, skip)
         // 1=NoSuitableProperty, 2=NotHappy, 3=NoAdults, 4=NoMoney
@@ -179,7 +180,7 @@ namespace Telex
             }
         }
 
-
+        
         protected override void OnUpdate()
         {
             var timeData = m_TimeDataQuery.GetSingleton<Game.Common.TimeData>();
@@ -188,15 +189,26 @@ namespace Telex
             if (currentHour == m_LastHour)
                 return;
 
+            if (m_IsFirstFrame)
+            {
+                m_LastHour = currentHour;
+                m_IsFirstFrame = false;
+                return;
+            }
+            if (currentHour == m_LastHour)
+            {
+                return;
+            }
             m_LastHour = currentHour;
 
             var currentDate = m_TimeSystem.GetCurrentDateTime();
+            string dateString = currentDate.ToString("yyy-dd-MM'T'HH:mm:ss.fff'Z'");
             int absoluteDay = TimeSystem.GetDay(m_SimulationSystem.frameIndex, timeData);
 
-            WriteDailySnapshot(absoluteDay, currentDate);
-            WriteGraphSnapshot(absoluteDay, currentDate);
-            WriteBuildingSnapshot(absoluteDay, currentDate);
-            WriteDemandSnapshot(absoluteDay, currentDate);
+            WriteDailySnapshot(absoluteDay, dateString);
+            WriteGraphSnapshot(absoluteDay, dateString);
+            WriteBuildingSnapshot(absoluteDay, dateString);
+            WriteDemandSnapshot(absoluteDay, dateString);
         }
 
         public static int GetTaxRateForResource(TaxAreaType areaType, int rawResourceInt, NativeArray<int> taxRates)
@@ -216,7 +228,7 @@ namespace Telex
             };
         }
 
-        private void WriteDailySnapshot(int absoluteDay, DateTime currentDate)
+        private void WriteDailySnapshot(int absoluteDay, String currentDate)
         {
             Population pop = EntityManager.GetComponentData<Population>(m_CitySystem.City);
 
@@ -360,7 +372,7 @@ namespace Telex
             Publish("telex-daily", snapshot);
         }
 
-        private void WriteGraphSnapshot(int absoluteDay, DateTime currentDate)
+        private void WriteGraphSnapshot(int absoluteDay, String currentDate)
         {
             var edges = m_EdgeQuery.ToEntityArray(Allocator.Temp);
             var records = new List<object>(edges.Length);
@@ -420,7 +432,7 @@ namespace Telex
             edges.Dispose();
         }
 
-        private void WriteDemandSnapshot(int absoluteDay, DateTime currentDate)
+        private void WriteDemandSnapshot(int absoluteDay, string currentDate)
         {
             var snapshot = new
             {
@@ -453,7 +465,7 @@ namespace Telex
         }
 
 
-        private void WriteBuildingSnapshot(int absoluteDay, DateTime currentDate)
+        private void WriteBuildingSnapshot(int absoluteDay, String currentDate)
         {
             var buildings = m_BuildingQuery.ToEntityArray(Allocator.Temp);
             var records = new List<object>(buildings.Length);
