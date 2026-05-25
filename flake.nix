@@ -6,13 +6,15 @@
         pkgs = nixpkgs.legacyPackages.x86_64-linux;
       in {
         devShells.x86_64-linux.default = pkgs.mkShell {
-          CSII_MANAGEDPATH="$HOME/.local/share/Steam/steamapps/common/Cities Skylines II/Cities2_Data/Managed";
-          CSII_MOD_DIRECTORY="$HOME/.local/share/Steam/steamapps/compatdata/949230/pfx/drive_c/users/steamuser/AppData/LocalLow/Colossal Order/Cities Skylines II/.cache/Mods";
           buildInputs = [
             pkgs.dotnet-sdk_8
             pkgs.mono
             pkgs.just
           ];
+          shellHook = ''
+            export CSII_MANAGEDPATH="$HOME/.local/share/Steam/steamapps/common/Cities Skylines II/Cities2_Data/Managed"
+            export CSII_MOD_DIRECTORY="$HOME/.local/share/Steam/steamapps/compatdata/949230/pfx/drive_c/users/steamuser/AppData/LocalLow/Colossal Order/Cities Skylines II/Mods"
+        '';
         };
       };
 }
