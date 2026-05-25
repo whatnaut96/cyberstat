@@ -155,50 +155,52 @@ namespace Telex
 
         private void Publish(string topic, object payload)
         {
-           
+            Mod.log.Info($"Telex: Attempting publish to {topic}");
+    
             if (m_MqttClient == null || !m_MqttClient.IsConnected)
             {
-                Mod.log.Warn("Telex: MQTT not connected, attempting reconnect...");
+                Mod.log.Warn($"Telex: MQTT not connected when publishing to {topic}, attempting reconnect...");
                 ConnectMqtt();
                 if (m_MqttClient == null || !m_MqttClient.IsConnected)
+                {
+                    Mod.log.Error($"Telex: Reconnect failed, dropping message to {topic}");
                     return;
+                }
             }
 
             try
             {
                 var json = JsonConvert.SerializeObject(payload);
+                Mod.log.Info($"Telex: Publishing {json.Length} bytes to {topic}");
                 var message = new MqttApplicationMessageBuilder()
                     .WithTopic(topic)
                     .WithPayload(Encoding.UTF8.GetBytes(json))
                     .Build();
 
                 m_MqttClient.PublishAsync(message).GetAwaiter().GetResult();
+                Mod.log.Info($"Telex: Published to {topic}");
             }
             catch (Exception ex)
             {
                 Mod.log.Error($"Telex: Failed to publish to {topic}: {ex.Message}");
             }
-        }
-
-        
+        }   
         protected override void OnUpdate()
         {
             var timeData = m_TimeDataQuery.GetSingleton<Game.Common.TimeData>();
             uint currentHour = (m_SimulationSystem.frameIndex - timeData.m_FirstFrame) / kFramesPerHour;
 
             if (currentHour == m_LastHour)
+            {
                 return;
-
+            }
             if (m_IsFirstFrame)
             {
                 m_LastHour = currentHour;
                 m_IsFirstFrame = false;
                 return;
             }
-            if (currentHour == m_LastHour)
-            {
-                return;
-            }
+
             m_LastHour = currentHour;
 
             var currentDate = m_TimeSystem.GetCurrentDateTime();
@@ -369,7 +371,7 @@ namespace Telex
                 cargo_airplane = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountAirplane),
                 cargo_truck = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTruck),
             };
-            Publish("telex-daily", snapshot);
+            Publish("telex/daily", snapshot);
         }
 
         private void WriteGraphSnapshot(int absoluteDay, String currentDate)
@@ -428,7 +430,7 @@ namespace Telex
                 current_date = currentDate,
                 edges = records
             };
-            Publish("telex-graph", graphSnapshot);
+            Publish("telex/graph", graphSnapshot);
             edges.Dispose();
         }
 
@@ -460,7 +462,7 @@ namespace Telex
                 residential_building_demand_high = m_ResidentialDemandSystem.buildingDemand.z,
             };
 
-            Publish("telex-demand", snapshot);
+            Publish("telex/demand", snapshot);
 
         }
 
@@ -585,7 +587,7 @@ namespace Telex
                 buildings = records
             };
 
-            Publish("telex-buildings", snapshot);
+            Publish("telex/buildings", snapshot);
             buildings.Dispose();
         }
     }
