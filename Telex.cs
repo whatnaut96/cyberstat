@@ -52,6 +52,7 @@ namespace Telex
         private ResidentialDemandSystem m_ResidentialDemandSystem;
         private EntityQuery m_BuildingQuery;
         private EntityQuery m_DemandParameterQuery;
+        private CityServiceBudgetSystem m_CityServiceBudgetSystem;
 
         private uint m_LastHour;
         private const uint kFramesPerHour = 262144 / 24;
@@ -112,8 +113,11 @@ namespace Telex
             );
 
             m_DemandParameterQuery = GetEntityQuery(
-            ComponentType.ReadOnly<Game.Prefabs.DemandParameterData>()
-        );
+                ComponentType.ReadOnly<Game.Prefabs.DemandParameterData>()
+            );
+
+            m_CityServiceBudgetSystem = World.GetOrCreateSystemManaged<CityServiceBudgetSystem>();
+        
             m_LastHour = uint.MaxValue;
 
             ConnectMqtt();
@@ -276,15 +280,17 @@ namespace Telex
                 // Population
                 population = pop.m_Population,
                 population_with_move_in = pop.m_PopulationWithMoveIn,
-                average_health = pop.m_AverageHealth,
+                average_health = pop.m_AverageHealth, // This is wellbeing / health
                 average_happiness = pop.m_AverageHappiness,
                 population_stat = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Population),
 
                 // Demographics
-                adults = m_CityStatisticsSystem.GetStatisticValue(StatisticType.AdultsCount),
-                age = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age),
+                children = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 0),
+                teens    = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 1),
+                adults   = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 2),
+                seniors  = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 3),
                 households = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HouseholdCount),
-                household_wealth = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HouseholdWealth),
+                household_wealth = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HouseholdWealth), // If you divide household wealth by # households you get the average household "bank balance"
                 homeless = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HomelessCount),
                 moved_in = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CitizensMovedIn),
                 moved_away = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CitizensMovedAway),
@@ -308,10 +314,8 @@ namespace Telex
 
                 // Wellbeing
                 wellbeing = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Wellbeing),
-                wellbeing_level = m_CityStatisticsSystem.GetStatisticValue(StatisticType.WellbeingLevel),
                 health = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Health),
-                health_level = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HealthLevel),
-
+                 
                 // Crime
                 crime_count = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeCount),
                 crime_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeRate),
@@ -319,8 +323,46 @@ namespace Telex
 
                 // Economy
                 money = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Money),
-                income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Income),
-                expense = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Expense),
+                // Top-level budget summary
+                money_delta     = m_CityServiceBudgetSystem.GetMoneyDelta(),
+                balance         = m_CityServiceBudgetSystem.GetBalance(),
+                total_income    = m_CityServiceBudgetSystem.GetTotalIncome(),
+                total_expenses  = m_CityServiceBudgetSystem.GetTotalExpenses(),
+                total_tax_income = m_CityServiceBudgetSystem.GetTotalTaxIncome(),
+
+                // Income by source
+                income_tax_residential   = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxResidential),
+                income_tax_commercial    = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxCommercial),
+                income_tax_industrial    = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxIndustrial),
+                income_tax_office        = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxOffice),
+                income_export_electricity = m_CityServiceBudgetSystem.GetIncome(IncomeSource.ExportElectricity),
+                income_export_water      = m_CityServiceBudgetSystem.GetIncome(IncomeSource.ExportWater),
+                income_fee_education     = m_CityServiceBudgetSystem.GetIncome(IncomeSource.FeeEducation),
+                income_fee_healthcare    = m_CityServiceBudgetSystem.GetIncome(IncomeSource.FeeHealthcare),
+                income_fee_parking       = m_CityServiceBudgetSystem.GetIncome(IncomeSource.FeeParking),
+                income_fee_transport     = m_CityServiceBudgetSystem.GetIncome(IncomeSource.FeePublicTransport),
+                income_fee_garbage       = m_CityServiceBudgetSystem.GetIncome(IncomeSource.FeeGarbage),
+                income_fee_electricity   = m_CityServiceBudgetSystem.GetIncome(IncomeSource.FeeElectricity),
+                income_fee_water         = m_CityServiceBudgetSystem.GetIncome(IncomeSource.FeeWater),
+                income_government_subsidy = m_CityServiceBudgetSystem.GetIncome(IncomeSource.GovernmentSubsidy),
+
+                // Expenses by source
+                expense_service_upkeep        = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ServiceUpkeep),
+                expense_loan_interest         = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.LoanInterest),
+                expense_import_electricity    = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportElectricity),
+                expense_import_water          = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportWater),
+                expense_export_sewage         = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ExportSewage),
+                expense_subsidy_commercial    = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.SubsidyCommercial),
+                expense_subsidy_industrial    = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.SubsidyIndustrial),
+                expense_subsidy_office        = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.SubsidyOffice),
+                expense_subsidy_residential   = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.SubsidyResidential),
+                expense_import_police         = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportPoliceService),
+                expense_import_ambulance      = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportAmbulanceService),
+                expense_import_garbage        = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportGarbageService),
+                expense_import_hearse         = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportHearseService),
+                expense_import_fire           = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportFireEngineService),
+                expense_map_tile_upkeep       = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.MapTileUpkeep),
+
                 tourist_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.TouristIncome),
                 tourists = m_CityStatisticsSystem.GetStatisticValue(StatisticType.TouristCount),
                 lodging_total = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingTotal),
