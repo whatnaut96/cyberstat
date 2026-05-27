@@ -214,7 +214,7 @@ namespace Telex
             WriteDailySnapshot(absoluteDay, dateString);
             WriteGraphSnapshot(absoluteDay, dateString);
             WriteBuildingSnapshot(absoluteDay, dateString);
-            WriteDemandSnapshot(absoluteDay, dateString);
+            //WriteDemandSnapshot(absoluteDay, dateString);
         }
 
         public static int GetTaxRateForResource(TaxAreaType areaType, int rawResourceInt, NativeArray<int> taxRates)
@@ -274,16 +274,7 @@ namespace Telex
             {
                 type = "daily",
                 city_name = m_CityConfigurationSystem.cityName,
-                day = absoluteDay,
                 date = currentDate,
-                
-                // Population
-                population = pop.m_Population,
-                population_with_move_in = pop.m_PopulationWithMoveIn,
-                average_health = pop.m_AverageHealth, // This is wellbeing / health
-                average_happiness = pop.m_AverageHappiness,
-                population_stat = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Population),
-
                 // Demographics
                 children = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 0),
                 teens    = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 1),
@@ -292,16 +283,6 @@ namespace Telex
                 households = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HouseholdCount),
                 household_wealth = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HouseholdWealth), // If you divide household wealth by # households you get the average household "bank balance"
                 homeless = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HomelessCount),
-                moved_in = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CitizensMovedIn),
-                moved_away = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CitizensMovedAway),
-                moved_away_no_suitable_property = m_CityStatisticsSystem.GetStatisticValue(StatisticType.MovedAwayReason, 1),
-                moved_away_not_happy = m_CityStatisticsSystem.GetStatisticValue(StatisticType.MovedAwayReason, 2),
-                moved_away_no_adults = m_CityStatisticsSystem.GetStatisticValue(StatisticType.MovedAwayReason, 3),
-                moved_away_no_money = m_CityStatisticsSystem.GetStatisticValue(StatisticType.MovedAwayReason, 4),
-                moved_away_tourist_no_target = m_CityStatisticsSystem.GetStatisticValue(StatisticType.MovedAwayReason, 5),
-                moved_away_tourist_no_hotel = m_CityStatisticsSystem.GetStatisticValue(StatisticType.MovedAwayReason, 6),
-                moved_away_tourist_no_money = m_CityStatisticsSystem.GetStatisticValue(StatisticType.MovedAwayReason, 7),
-                moved_away_trip_not_moved_in = m_CityStatisticsSystem.GetStatisticValue(StatisticType.MovedAwayReason, 8),
                 birth_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.BirthRate),
                 death_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.DeathRate),
 
@@ -322,15 +303,7 @@ namespace Telex
                 escaped_arrests = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EscapedArrestCount),
 
                 // Economy
-                money = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Money),
-                // Top-level budget summary
-                money_delta     = m_CityServiceBudgetSystem.GetMoneyDelta(),
-                balance         = m_CityServiceBudgetSystem.GetBalance(),
-                total_income    = m_CityServiceBudgetSystem.GetTotalIncome(),
-                total_expenses  = m_CityServiceBudgetSystem.GetTotalExpenses(),
-                total_tax_income = m_CityServiceBudgetSystem.GetTotalTaxIncome(),
-
-                // Income by source
+                balance = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Money),
                 income_tax_residential   = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxResidential),
                 income_tax_commercial    = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxCommercial),
                 income_tax_industrial    = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxIndustrial),
@@ -530,8 +503,6 @@ namespace Telex
             {
                 var building = EntityManager.GetComponentData<Game.Buildings.Building>(buildingEntity);
                 var transform = EntityManager.GetComponentData<Game.Objects.Transform>(buildingEntity);
-                var prefabRef = EntityManager.GetComponentData<Game.Prefabs.PrefabRef>(buildingEntity);
-                Entity prefab = prefabRef.m_Prefab;
 
                 bool hasElectricity = electricityLookup.HasComponent(buildingEntity);
                 bool hasWater = waterLookup.HasComponent(buildingEntity);
@@ -597,7 +568,6 @@ namespace Telex
                     has_water_node = hasBuildingData && (prefabBuildingData.m_Flags & Game.Prefabs.BuildingFlags.HasWaterNode) != 0,
                     has_electricity_node = hasBuildingData && (prefabBuildingData.m_Flags & Game.Prefabs.BuildingFlags.HasLowVoltageNode) != 0,
                     has_sewage_node = hasBuildingData && (prefabBuildingData.m_Flags & Game.Prefabs.BuildingFlags.HasSewageNode) != 0,
-                    level = isSpawnable ? (int)spawnableLookup[prefab].m_Level : 0,
                     service_available = hasService ? serviceAvailableLookup[buildingEntity].m_ServiceAvailable : 0,
                     service_mean_priority = hasService ? serviceAvailableLookup[buildingEntity].m_MeanPriority : 0f,
                     electricity = hasElectricity ? new
