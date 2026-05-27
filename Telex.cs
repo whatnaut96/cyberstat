@@ -503,7 +503,7 @@ namespace Telex
             {
                 var building = EntityManager.GetComponentData<Game.Buildings.Building>(buildingEntity);
                 var transform = EntityManager.GetComponentData<Game.Objects.Transform>(buildingEntity);
-
+                
                 bool hasElectricity = electricityLookup.HasComponent(buildingEntity);
                 bool hasWater = waterLookup.HasComponent(buildingEntity);
                 bool isSpawnable = spawnableLookup.HasComponent(prefab);
@@ -558,7 +558,6 @@ namespace Telex
                 {
                     entity = buildingEntity.Index,
                     version = buildingEntity.Version,
-                    prefab = prefab.Index,
                     zone_type = zoneType,
                     commercial_resources = isCommercial ? commercialLookup[buildingEntity].m_Resources.ToString() : null,
                     industrial_resources = isIndustrial ? industrialLookup[buildingEntity].m_Resources.ToString() : null,
