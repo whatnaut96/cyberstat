@@ -53,6 +53,7 @@ namespace Telex
         private EntityQuery m_BuildingQuery;
         private EntityQuery m_DemandParameterQuery;
         private CityServiceBudgetSystem m_CityServiceBudgetSystem;
+        private EntityQuery m_TrafficQuery;
 
         private uint m_LastHour;
         private const uint kFramesPerHour = 262144 / 24;
@@ -119,6 +120,16 @@ namespace Telex
             m_CityServiceBudgetSystem = World.GetOrCreateSystemManaged<CityServiceBudgetSystem>();
         
             m_LastHour = uint.MaxValue;
+
+            // Per-lane traffic flow query (CarLane sublanes that have LaneFlow)
+            m_TrafficQuery = GetEntityQuery(
+                ComponentType.ReadOnly<Game.Net.CarLane>(),
+                ComponentType.ReadOnly<Game.Net.LaneFlow>(),
+                ComponentType.ReadOnly<Game.Net.EdgeLane>(),
+                ComponentType.ReadOnly<Game.Net.Lane>(),
+                ComponentType.Exclude<Deleted>(),
+                ComponentType.Exclude<Temp>()
+            );
 
             ConnectMqtt();
         }
@@ -213,6 +224,7 @@ namespace Telex
 
             WriteDailySnapshot(absoluteDay, dateString);
             WriteGraphSnapshot(absoluteDay, dateString);
+            WriteTrafficSnapshot(absoluteDay, dateString);
             WriteBuildingSnapshot(absoluteDay, dateString);
             //WriteDemandSnapshot(absoluteDay, dateString);
         }
@@ -420,6 +432,35 @@ namespace Telex
                     }
                 }
 
+                // Road-level traffic data (present on road edges, not all edge types)
+                object trafficRecord = null;
+                if (EntityManager.HasComponent<Game.Net.Road>(edgeEntity))
+                {
+                    var road = EntityManager.GetComponentData<Game.Net.Road>(edgeEntity);
+                    // Speed: distance/duration per lane group, expressed as float4 (4 carriageway groups)
+                    // Volume proxy: sqrt(distance * 5.333) matches game infoview formula
+                    var dur0 = road.m_TrafficFlowDuration0;
+                    var dur1 = road.m_TrafficFlowDuration1;
+                    var dist0 = road.m_TrafficFlowDistance0;
+                    var dist1 = road.m_TrafficFlowDistance1;
+                    float4 speed0 = math.select(0f, dist0 / dur0, dur0 > 0f);
+                    float4 speed1 = math.select(0f, dist1 / dur1, dur1 > 0f);
+                    float4 vol0 = math.sqrt((dist0 + dist1) * 2.6666667f);
+                    trafficRecord = new
+                    {
+                        // direction 0 (forward lanes) per carriageway group
+                        speed0 = new float[] { speed0.x, speed0.y, speed0.z, speed0.w },
+                        speed1 = new float[] { speed1.x, speed1.y, speed1.z, speed1.w },
+                        // combined volume proxy (matches game TrafficVolume infoview)
+                        volume = new float[] { vol0.x, vol0.y, vol0.z, vol0.w },
+                        // raw accumulators for downstream recomputation
+                        duration0 = new float[] { dur0.x, dur0.y, dur0.z, dur0.w },
+                        duration1 = new float[] { dur1.x, dur1.y, dur1.z, dur1.w },
+                        distance0 = new float[] { dist0.x, dist0.y, dist0.z, dist0.w },
+                        distance1 = new float[] { dist1.x, dist1.y, dist1.z, dist1.w },
+                    };
+                }
+
                 records.Add(new
                 {
                     entity = edgeEntity.Index,
@@ -433,7 +474,8 @@ namespace Telex
                     curve_b = new { x = curve.m_Bezier.b.x, y = curve.m_Bezier.b.y, z = curve.m_Bezier.b.z },
                     curve_c = new { x = curve.m_Bezier.c.x, y = curve.m_Bezier.c.y, z = curve.m_Bezier.c.z },
                     curve_d = new { x = curve.m_Bezier.d.x, y = curve.m_Bezier.d.y, z = curve.m_Bezier.d.z },
-                    service_coverage = coverageList
+                    service_coverage = coverageList,
+                    traffic = trafficRecord
                 });
             }
 
@@ -447,6 +489,71 @@ namespace Telex
             };
             Publish("telex/graph", graphSnapshot);
             edges.Dispose();
+        }
+
+        private void WriteTrafficSnapshot(int absoluteDay, string currentDate)
+        {
+            // Per-lane flow data. Each CarLane entity with LaneFlow is a sublane of a road edge.
+            // EdgeLane.m_EdgeDelta tells us where on the edge this lane sits (0=start, 1=end).
+            // Lane.m_StartNode / m_EndNode carry the owner edge index via PathNode.
+            var lanes = m_TrafficQuery.ToEntityArray(Allocator.Temp);
+            var records = new List<object>(lanes.Length);
+
+            var ownerLookup = GetComponentLookup<Game.Common.Owner>(true);
+
+            foreach (var laneEntity in lanes)
+            {
+                var flow = EntityManager.GetComponentData<Game.Net.LaneFlow>(laneEntity);
+                var edgeLane = EntityManager.GetComponentData<Game.Net.EdgeLane>(laneEntity);
+                var lane = EntityManager.GetComponentData<Game.Net.Lane>(laneEntity);
+                var carLane = EntityManager.GetComponentData<Game.Net.CarLane>(laneEntity);
+
+                // Compute average speed for this lane (same formula as NetUtils.GetTrafficFlowSpeed)
+                float4 dur = flow.m_Duration;
+                float4 dist = flow.m_Distance;
+                float4 speed = math.select(0f, dist / dur, dur > 0f);
+
+                // Resolve owner edge entity index
+                int ownerEdgeIndex = -1;
+                int ownerEdgeVersion = -1;
+                if (ownerLookup.TryGetComponent(laneEntity, out var owner))
+                {
+                    ownerEdgeIndex = owner.m_Owner.Index;
+                    ownerEdgeVersion = owner.m_Owner.Version;
+                }
+
+                records.Add(new
+                {
+                    entity = laneEntity.Index,
+                    version = laneEntity.Version,
+                    owner_edge = ownerEdgeIndex,
+                    owner_edge_version = ownerEdgeVersion,
+                    // EdgeDelta: x=position along edge at lane start, y=at lane end (0..1)
+                    edge_delta_start = edgeLane.m_EdgeDelta.x,
+                    edge_delta_end   = edgeLane.m_EdgeDelta.y,
+                    // Carriageway group encodes direction + carriageway index
+                    carriageway_group = carLane.m_CarriagewayGroup,
+                    // Speed in m/s per lane group component (usually only .x is non-zero for a single lane)
+                    speed = new float[] { speed.x, speed.y, speed.z, speed.w },
+                    // Raw accumulators
+                    duration = new float[] { dur.x, dur.y, dur.z, dur.w },
+                    distance = new float[] { dist.x, dist.y, dist.z, dist.w },
+                    // m_Next: fractional position of next vehicle ahead (for congestion detection)
+                    next_x = flow.m_Next.x,
+                    next_y = flow.m_Next.y,
+                });
+            }
+
+            var snapshot = new
+            {
+                type = "traffic",
+                city_name = m_CityConfigurationSystem.cityName,
+                day = absoluteDay,
+                current_date = currentDate,
+                lanes = records
+            };
+            Publish("telex/traffic", snapshot);
+            lanes.Dispose();
         }
 
         private void WriteDemandSnapshot(int absoluteDay, string currentDate)
@@ -486,7 +593,7 @@ namespace Telex
         {
             var buildings = m_BuildingQuery.ToEntityArray(Allocator.Temp);
             var records = new List<object>(buildings.Length);
-
+                        
             var schoolDataLookup = GetComponentLookup<Game.Prefabs.SchoolData>(true);
             var hospitalDataLookup = GetComponentLookup<Game.Prefabs.HospitalData>(true);
             var electricityLookup = GetComponentLookup<Game.Buildings.ElectricityConsumer>(true);
@@ -503,10 +610,11 @@ namespace Telex
             {
                 var building = EntityManager.GetComponentData<Game.Buildings.Building>(buildingEntity);
                 var transform = EntityManager.GetComponentData<Game.Objects.Transform>(buildingEntity);
+                var prefabRef = EntityManager.GetComponentData<Game.Prefabs.PrefabRef>(buildingEntity);
+                Entity prefab = prefabRef.m_Prefab;
                 
                 bool hasElectricity = electricityLookup.HasComponent(buildingEntity);
                 bool hasWater = waterLookup.HasComponent(buildingEntity);
-                bool isSpawnable = spawnableLookup.HasComponent(prefab);
                 bool isResidential = residentialLookup.HasComponent(buildingEntity);
                 bool isCommercial = commercialLookup.HasComponent(buildingEntity);
                 bool isIndustrial = industrialLookup.HasComponent(buildingEntity);
