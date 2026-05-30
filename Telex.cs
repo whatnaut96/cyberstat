@@ -646,6 +646,7 @@ namespace Telex
             var waitingPassengersLookup = GetComponentLookup<Game.Routes.WaitingPassengers>(true);
             var routeLaneLookup = GetComponentLookup<Game.Routes.RouteLane>(true);
             var ownerLookup = GetComponentLookup<Game.Common.Owner>(true);
+            var connectedLookup = GetComponentLookup<Game.Routes.Connected>(true);
 
             foreach (var lineEntity in lineEntities)
             {
@@ -654,7 +655,8 @@ namespace Telex
                 var prefabRef = EntityManager.GetComponentData<Game.Prefabs.PrefabRef>(lineEntity);
 
                 int? routeNumber = null;
-                if (routeNumberLookup.HasComponent(lineEntity)) routeNumber = routeNumberLookup[lineEntity].m_Number;
+                if (routeNumberLookup.HasComponent(lineEntity))
+                    routeNumber = routeNumberLookup[lineEntity].m_Number;
 
                 object routeInfo = null;
                 if (routeInfoLookup.HasComponent(lineEntity))
@@ -711,14 +713,49 @@ namespace Telex
                 if (EntityManager.HasBuffer<Game.Routes.RouteWaypoint>(lineEntity))
                 {
                     var waypoints = EntityManager.GetBuffer<Game.Routes.RouteWaypoint>(lineEntity);
+
                     for (int i = 0; i < waypoints.Length; i++)
                     {
+                        Entity waypointEntity = waypoints[i].m_Waypoint;
+
+                        object waypointPos = null;
+                        if (positionLookup.TryGetComponent(waypointEntity, out var waypointPosition))
+                        {
+                            var p = waypointPosition.m_Position;
+                            waypointPos = new { x = p.x, y = p.y, z = p.z };
+                        }
+
+                        Entity connectedEntity = Entity.Null;
+                        if (connectedLookup.TryGetComponent(waypointEntity, out var connected))
+                        {
+                            connectedEntity = connected.m_Connected;
+                        }
+
+                        object waiting = null;
+                        if (waitingPassengersLookup.TryGetComponent(waypointEntity, out var w))
+                        {
+                            waiting = new
+                            {
+                                count = w.m_Count,
+                                ongoing_accumulation = w.m_OngoingAccumulation,
+                                concluded_accumulation = w.m_ConcludedAccumulation,
+                                success_accumulation = w.m_SuccessAccumulation,
+                                average_waiting_time = w.m_AverageWaitingTime
+                            };
+                        }
+
                         lineStops.Add(new
                         {
                             route_id = lineEntity.Index,
+                            route_version = lineEntity.Version,
                             sequence = i,
-                            waypoint_id = waypoints[i].m_Waypoint.Index,
-                            waypoint_version = waypoints[i].m_Waypoint.Version
+                            waypoint_id = waypointEntity.Index,
+                            waypoint_version = waypointEntity.Version,
+                            position = waypointPos,
+                            district_id = GetDistrictId(waypointEntity),
+                            connected_entity = MakeEntityRef(connectedEntity),
+                            connected_district_id = GetDistrictId(connectedEntity),
+                            waiting_passengers = waiting
                         });
                     }
                 }
@@ -731,6 +768,7 @@ namespace Telex
                         lineSegments.Add(new
                         {
                             route_id = lineEntity.Index,
+                            route_version = lineEntity.Version,
                             sequence = i,
                             segment_id = segments[i].m_Segment.Index,
                             segment_version = segments[i].m_Segment.Version
@@ -746,6 +784,7 @@ namespace Telex
                         lineVehicles.Add(new
                         {
                             route_id = lineEntity.Index,
+                            route_version = lineEntity.Version,
                             vehicle_id = vehicles[i].m_Vehicle.Index,
                             vehicle_version = vehicles[i].m_Vehicle.Version
                         });
@@ -760,16 +799,15 @@ namespace Telex
                 var prefabRef = EntityManager.GetComponentData<Game.Prefabs.PrefabRef>(stopEntity);
 
                 object pos = null;
-                if (positionLookup.HasComponent(stopEntity))
+                if (positionLookup.TryGetComponent(stopEntity, out var stopPosition))
                 {
-                    var p = positionLookup[stopEntity].m_Position;
+                    var p = stopPosition.m_Position;
                     pos = new { x = p.x, y = p.y, z = p.z };
                 }
 
                 object waiting = null;
-                if (waitingPassengersLookup.HasComponent(stopEntity))
+                if (waitingPassengersLookup.TryGetComponent(stopEntity, out var w))
                 {
-                    var w = waitingPassengersLookup[stopEntity];
                     waiting = new
                     {
                         count = w.m_Count,
@@ -781,9 +819,8 @@ namespace Telex
                 }
 
                 object routeLane = null;
-                if (routeLaneLookup.HasComponent(stopEntity))
+                if (routeLaneLookup.TryGetComponent(stopEntity, out var lane))
                 {
-                    var lane = routeLaneLookup[stopEntity];
                     routeLane = new
                     {
                         start_lane = lane.m_StartLane.Index,
@@ -845,40 +882,61 @@ namespace Telex
             lineEntities.Dispose();
             stopEntities.Dispose();
         }
-
         private void WriteCitizenSnapshot(int absoluteDay, string currentDate)
         {
             var citizens = m_CitizenQuery.ToEntityArray(Allocator.Temp);
             var records = new List<object>(citizens.Length);
 
-            // Lookups to find their relationships
             var householdMemberLookup = GetComponentLookup<HouseholdMember>(true);
-            var travelPurposeLookup = GetComponentLookup<Game.Citizens.TravelPurpose>(true);
+            var propertyRenterLookup = GetComponentLookup<PropertyRenter>(true);
+            var currentDistrictLookup = GetComponentLookup<Game.Areas.CurrentDistrict>(true);
 
             foreach (var citizenEntity in citizens)
             {
                 var citizenData = EntityManager.GetComponentData<Citizen>(citizenEntity);
+                int ageGroupValue = (int)citizenData.GetAge();
 
-                // Get the Household relationship link safely
                 int? householdId = null;
+                int? homeBuildingId = null;
+                int? homeBuildingVersion = null;
+                int? homeDistrictId = null;
+
                 if (householdMemberLookup.HasComponent(citizenEntity))
                 {
-                    householdId = householdMemberLookup[citizenEntity].m_Household.Index;
-                }
+                    Entity household = householdMemberLookup[citizenEntity].m_Household;
+                    householdId = household.Index;
 
-                // Resolve the age group enum value natively via the component instance method
-                int ageGroupValue = (int)citizenData.GetAge(); // 0=Child, 1=Teen, 2=Adult, 3=Elder
+                    if (propertyRenterLookup.TryGetComponent(household, out var renter))
+                    {
+                        Entity homeBuilding = renter.m_Property;
+
+                        if (homeBuilding != Entity.Null && EntityManager.Exists(homeBuilding))
+                        {
+                            homeBuildingId = homeBuilding.Index;
+                            homeBuildingVersion = homeBuilding.Version;
+
+                            if (currentDistrictLookup.TryGetComponent(homeBuilding, out var currentDistrict)
+                                && currentDistrict.m_District != Entity.Null)
+                            {
+                                homeDistrictId = currentDistrict.m_District.Index;
+                            }
+                        }
+                    }
+                }
 
                 records.Add(new
                 {
                     entity = citizenEntity.Index,
                     version = citizenEntity.Version,
-                    household_id = householdId, // Foreign key to connect to Household data downstream
+                    household_id = householdId,
                     age = ageGroupValue,
-                    education = citizenData.GetEducationLevel(), // 0 to 4 value
-                    state = (int)citizenData.m_State, // Bitmask tracking state flags
+                    education = citizenData.GetEducationLevel(),
+                    state = (int)citizenData.m_State,
                     wellbeing = citizenData.m_WellBeing,
-                    health = citizenData.m_Health
+                    health = citizenData.m_Health,
+                    home_building_id = homeBuildingId,
+                    home_building_version = homeBuildingVersion,
+                    home_district_id = homeDistrictId
                 });
             }
 
@@ -894,206 +952,206 @@ namespace Telex
             Publish("telex/citizens", snapshot);
             citizens.Dispose();
         }
-    private void WriteBuildingSnapshot(int absoluteDay, string currentDate)
-    {
-        var buildings = m_BuildingQuery.ToEntityArray(Allocator.Temp);
-        var records = new List<object>(buildings.Length);
-
-        var schoolDataLookup = GetComponentLookup<Game.Prefabs.SchoolData>(true);
-        var hospitalDataLookup = GetComponentLookup<Game.Prefabs.HospitalData>(true);
-        var electricityLookup = GetComponentLookup<Game.Buildings.ElectricityConsumer>(true);
-        var waterLookup = GetComponentLookup<Game.Buildings.WaterConsumer>(true);
-        var commercialLookup = GetComponentLookup<Game.Buildings.CommercialProperty>(true);
-        var industrialLookup = GetComponentLookup<Game.Buildings.IndustrialProperty>(true);
-        var serviceAvailableLookup = GetComponentLookup<Game.Companies.ServiceAvailable>(true);
-        var residentialLookup = GetComponentLookup<Game.Buildings.ResidentialProperty>(true);
-        var officeLookup = GetComponentLookup<Game.Buildings.OfficeProperty>(true);
-
-        Game.UI.NameSystem activeNameSystem = null;
-        try
+        private void WriteBuildingSnapshot(int absoluteDay, string currentDate)
         {
-            activeNameSystem = base.World.GetExistingSystemManaged<Game.UI.NameSystem>();
-        }
-        catch (Exception ex)
-        {
-            Mod.log.Error($"[Telex] Failed to retrieve NameSystem: {ex.Message}");
-        }
+            var buildings = m_BuildingQuery.ToEntityArray(Allocator.Temp);
+            var records = new List<object>(buildings.Length);
 
-        foreach (var buildingEntity in buildings)
-        {
-            var building = EntityManager.GetComponentData<Game.Buildings.Building>(buildingEntity);
-            var transform = EntityManager.GetComponentData<Game.Objects.Transform>(buildingEntity);
-            var prefabRef = EntityManager.GetComponentData<Game.Prefabs.PrefabRef>(buildingEntity);
-            Entity prefab = prefabRef.m_Prefab;
+            var schoolDataLookup = GetComponentLookup<Game.Prefabs.SchoolData>(true);
+            var hospitalDataLookup = GetComponentLookup<Game.Prefabs.HospitalData>(true);
+            var electricityLookup = GetComponentLookup<Game.Buildings.ElectricityConsumer>(true);
+            var waterLookup = GetComponentLookup<Game.Buildings.WaterConsumer>(true);
+            var commercialLookup = GetComponentLookup<Game.Buildings.CommercialProperty>(true);
+            var industrialLookup = GetComponentLookup<Game.Buildings.IndustrialProperty>(true);
+            var serviceAvailableLookup = GetComponentLookup<Game.Companies.ServiceAvailable>(true);
+            var residentialLookup = GetComponentLookup<Game.Buildings.ResidentialProperty>(true);
+            var officeLookup = GetComponentLookup<Game.Buildings.OfficeProperty>(true);
 
-            bool hasElectricity = electricityLookup.HasComponent(buildingEntity);
-            bool hasWater = waterLookup.HasComponent(buildingEntity);
-            bool isResidential = residentialLookup.HasComponent(buildingEntity);
-            bool isCommercial = commercialLookup.HasComponent(buildingEntity);
-            bool isIndustrial = industrialLookup.HasComponent(buildingEntity);
-            bool isOffice = officeLookup.HasComponent(buildingEntity);
-            bool hasService = serviceAvailableLookup.HasComponent(buildingEntity);
-
-            string zoneType = isResidential ? "residential"
-                : isCommercial ? "commercial"
-                : isIndustrial ? "industrial"
-                : isOffice ? "office"
-                : "other";
-
-            bool hasBuildingData = EntityManager.HasComponent<Game.Prefabs.BuildingData>(prefab);
-            Game.Prefabs.BuildingData prefabBuildingData = hasBuildingData
-                ? EntityManager.GetComponentData<Game.Prefabs.BuildingData>(prefab)
-                : default;
-
-            // 1. RESOLVE DISTRICT NAMES
-            int? districtId = null;
-            string districtName = null;
-            Entity targetDistrictEntity = Entity.Null;
-
-            if (EntityManager.HasComponent<Game.Areas.CurrentDistrict>(buildingEntity))
+            Game.UI.NameSystem activeNameSystem = null;
+            try
             {
-                targetDistrictEntity = EntityManager.GetComponentData<Game.Areas.CurrentDistrict>(buildingEntity).m_District;
+                activeNameSystem = base.World.GetExistingSystemManaged<Game.UI.NameSystem>();
+            }
+            catch (Exception ex)
+            {
+                Mod.log.Error($"[Telex] Failed to retrieve NameSystem: {ex.Message}");
             }
 
-            if (targetDistrictEntity == Entity.Null && EntityManager.HasComponent<Game.Common.Owner>(buildingEntity))
+            foreach (var buildingEntity in buildings)
             {
-                var owner = EntityManager.GetComponentData<Game.Common.Owner>(buildingEntity).m_Owner;
-                if (EntityManager.HasComponent<Game.Areas.District>(owner))
+                var building = EntityManager.GetComponentData<Game.Buildings.Building>(buildingEntity);
+                var transform = EntityManager.GetComponentData<Game.Objects.Transform>(buildingEntity);
+                var prefabRef = EntityManager.GetComponentData<Game.Prefabs.PrefabRef>(buildingEntity);
+                Entity prefab = prefabRef.m_Prefab;
+
+                bool hasElectricity = electricityLookup.HasComponent(buildingEntity);
+                bool hasWater = waterLookup.HasComponent(buildingEntity);
+                bool isResidential = residentialLookup.HasComponent(buildingEntity);
+                bool isCommercial = commercialLookup.HasComponent(buildingEntity);
+                bool isIndustrial = industrialLookup.HasComponent(buildingEntity);
+                bool isOffice = officeLookup.HasComponent(buildingEntity);
+                bool hasService = serviceAvailableLookup.HasComponent(buildingEntity);
+
+                string zoneType = isResidential ? "residential"
+                    : isCommercial ? "commercial"
+                    : isIndustrial ? "industrial"
+                    : isOffice ? "office"
+                    : "other";
+
+                bool hasBuildingData = EntityManager.HasComponent<Game.Prefabs.BuildingData>(prefab);
+                Game.Prefabs.BuildingData prefabBuildingData = hasBuildingData
+                    ? EntityManager.GetComponentData<Game.Prefabs.BuildingData>(prefab)
+                    : default;
+
+                // 1. RESOLVE DISTRICT NAMES
+                int? districtId = null;
+                string districtName = null;
+                Entity targetDistrictEntity = Entity.Null;
+
+                if (EntityManager.HasComponent<Game.Areas.CurrentDistrict>(buildingEntity))
                 {
-                    targetDistrictEntity = owner;
+                    targetDistrictEntity = EntityManager.GetComponentData<Game.Areas.CurrentDistrict>(buildingEntity).m_District;
                 }
-            }
 
-            if (targetDistrictEntity != Entity.Null)
-            {
-                districtId = targetDistrictEntity.Index;
-
-                if (activeNameSystem != null)
+                if (targetDistrictEntity == Entity.Null && EntityManager.HasComponent<Game.Common.Owner>(buildingEntity))
                 {
-                    // TryGetCustomName covers player-renamed districts,
-                    // GetRenderedLabelName covers auto-generated names like "Sterling Square"
-                    if (!activeNameSystem.TryGetCustomName(targetDistrictEntity, out districtName))
+                    var owner = EntityManager.GetComponentData<Game.Common.Owner>(buildingEntity).m_Owner;
+                    if (EntityManager.HasComponent<Game.Areas.District>(owner))
                     {
-                        districtName = activeNameSystem.GetRenderedLabelName(targetDistrictEntity);
+                        targetDistrictEntity = owner;
                     }
                 }
 
-                if (string.IsNullOrEmpty(districtName))
+                if (targetDistrictEntity != Entity.Null)
                 {
-                    districtName = $"District {targetDistrictEntity.Index}";
-                }
-            }
-            else
-            {
-                districtName = m_CityConfigurationSystem.cityName;
-            }
+                    districtId = targetDistrictEntity.Index;
 
-            // 2. RESOLVE STREET NAMES via BuildingUtils.GetAddress
-            // This mirrors exactly how the game itself resolves building addresses
-            string streetName = "";
-            int houseNumber = 0;
-            Entity roadEdgeEntity = building.m_RoadEdge;
-
-            if (roadEdgeEntity != Entity.Null)
-            {
-                if (Game.Buildings.BuildingUtils.GetAddress(
-                    EntityManager, buildingEntity,
-                    roadEdgeEntity, building.m_CurvePosition,
-                    out Entity aggregateRoad, out int number))
-                {
-                    houseNumber = number;
-                    if (activeNameSystem != null && aggregateRoad != Entity.Null)
+                    if (activeNameSystem != null)
                     {
-                        if (!activeNameSystem.TryGetCustomName(aggregateRoad, out streetName))
+                        // TryGetCustomName covers player-renamed districts,
+                        // GetRenderedLabelName covers auto-generated names like "Sterling Square"
+                        if (!activeNameSystem.TryGetCustomName(targetDistrictEntity, out districtName))
                         {
-                            streetName = activeNameSystem.GetRenderedLabelName(aggregateRoad);
+                            districtName = activeNameSystem.GetRenderedLabelName(targetDistrictEntity);
+                        }
+                    }
+
+                    if (string.IsNullOrEmpty(districtName))
+                    {
+                        districtName = $"District {targetDistrictEntity.Index}";
+                    }
+                }
+                else
+                {
+                    districtName = m_CityConfigurationSystem.cityName;
+                }
+
+                // 2. RESOLVE STREET NAMES via BuildingUtils.GetAddress
+                // This mirrors exactly how the game itself resolves building addresses
+                string streetName = "";
+                int houseNumber = 0;
+                Entity roadEdgeEntity = building.m_RoadEdge;
+
+                if (roadEdgeEntity != Entity.Null)
+                {
+                    if (Game.Buildings.BuildingUtils.GetAddress(
+                        EntityManager, buildingEntity,
+                        roadEdgeEntity, building.m_CurvePosition,
+                        out Entity aggregateRoad, out int number))
+                    {
+                        houseNumber = number;
+                        if (activeNameSystem != null && aggregateRoad != Entity.Null)
+                        {
+                            if (!activeNameSystem.TryGetCustomName(aggregateRoad, out streetName))
+                            {
+                                streetName = activeNameSystem.GetRenderedLabelName(aggregateRoad);
+                            }
                         }
                     }
                 }
+
+                if (streetName == null) streetName = "";
+
+                object schoolRecord = null;
+                if (schoolDataLookup.HasComponent(prefab))
+                {
+                    var school = schoolDataLookup[prefab];
+                    schoolRecord = new
+                    {
+                        student_capacity = school.m_StudentCapacity,
+                        education_level = (int)school.m_EducationLevel,
+                        graduation_modifier = school.m_GraduationModifier,
+                        student_wellbeing = (int)school.m_StudentWellbeing,
+                        student_health = (int)school.m_StudentHealth
+                    };
+                }
+
+                object hospitalRecord = null;
+                if (hospitalDataLookup.HasComponent(prefab))
+                {
+                    var hospital = hospitalDataLookup[prefab];
+                    hospitalRecord = new
+                    {
+                        patient_capacity = hospital.m_PatientCapacity,
+                        ambulance_capacity = hospital.m_AmbulanceCapacity,
+                        helicopter_capacity = hospital.m_MedicalHelicopterCapacity,
+                        treatment_bonus = hospital.m_TreatmentBonus,
+                        health_range_min = hospital.m_HealthRange.x,
+                        health_range_max = hospital.m_HealthRange.y
+                    };
+                }
+
+                records.Add(new
+                {
+                    entity = buildingEntity.Index,
+                    version = buildingEntity.Version,
+                    district = districtId,
+                    district_name = districtName,
+                    street_name = streetName,
+                    house_number = houseNumber,
+                    zone_type = zoneType,
+                    commercial_resources = isCommercial ? commercialLookup[buildingEntity].m_Resources.ToString() : null,
+                    industrial_resources = isIndustrial ? industrialLookup[buildingEntity].m_Resources.ToString() : null,
+                    pos = new { x = transform.m_Position.x, y = transform.m_Position.y, z = transform.m_Position.z },
+                    road_edge = roadEdgeEntity.Index,
+                    curve_position = building.m_CurvePosition,
+                    has_water_node = hasBuildingData && (prefabBuildingData.m_Flags & Game.Prefabs.BuildingFlags.HasWaterNode) != 0,
+                    has_electricity_node = hasBuildingData && (prefabBuildingData.m_Flags & Game.Prefabs.BuildingFlags.HasLowVoltageNode) != 0,
+                    has_sewage_node = hasBuildingData && (prefabBuildingData.m_Flags & Game.Prefabs.BuildingFlags.HasSewageNode) != 0,
+                    service_available = hasService ? serviceAvailableLookup[buildingEntity].m_ServiceAvailable : 0,
+                    service_mean_priority = hasService ? serviceAvailableLookup[buildingEntity].m_MeanPriority : 0f,
+                    electricity = hasElectricity ? new
+                    {
+                        wanted = electricityLookup[buildingEntity].m_WantedConsumption,
+                        fulfilled = electricityLookup[buildingEntity].m_FulfilledConsumption,
+                        connected = electricityLookup[buildingEntity].electricityConnected
+                    } : null,
+                    water = hasWater ? new
+                    {
+                        wanted = waterLookup[buildingEntity].m_WantedConsumption,
+                        fulfilled_fresh = waterLookup[buildingEntity].m_FulfilledFresh,
+                        fulfilled_sewage = waterLookup[buildingEntity].m_FulfilledSewage,
+                        pollution = waterLookup[buildingEntity].m_Pollution,
+                        water_connected = waterLookup[buildingEntity].waterConnected,
+                        sewage_connected = waterLookup[buildingEntity].sewageConnected
+                    } : null,
+                    school = schoolRecord,
+                    hospital = hospitalRecord
+                });
             }
 
-            if (streetName == null) streetName = "";
-
-            object schoolRecord = null;
-            if (schoolDataLookup.HasComponent(prefab))
+            var snapshot = new
             {
-                var school = schoolDataLookup[prefab];
-                schoolRecord = new
-                {
-                    student_capacity = school.m_StudentCapacity,
-                    education_level = (int)school.m_EducationLevel,
-                    graduation_modifier = school.m_GraduationModifier,
-                    student_wellbeing = (int)school.m_StudentWellbeing,
-                    student_health = (int)school.m_StudentHealth
-                };
-            }
+                type = "buildings",
+                city_name = m_CityConfigurationSystem.cityName,
+                day = absoluteDay,
+                current_date = currentDate,
+                buildings = records
+            };
 
-            object hospitalRecord = null;
-            if (hospitalDataLookup.HasComponent(prefab))
-            {
-                var hospital = hospitalDataLookup[prefab];
-                hospitalRecord = new
-                {
-                    patient_capacity = hospital.m_PatientCapacity,
-                    ambulance_capacity = hospital.m_AmbulanceCapacity,
-                    helicopter_capacity = hospital.m_MedicalHelicopterCapacity,
-                    treatment_bonus = hospital.m_TreatmentBonus,
-                    health_range_min = hospital.m_HealthRange.x,
-                    health_range_max = hospital.m_HealthRange.y
-                };
-            }
-
-            records.Add(new
-            {
-                entity = buildingEntity.Index,
-                version = buildingEntity.Version,
-                district = districtId,
-                district_name = districtName,
-                street_name = streetName,
-                house_number = houseNumber,
-                zone_type = zoneType,
-                commercial_resources = isCommercial ? commercialLookup[buildingEntity].m_Resources.ToString() : null,
-                industrial_resources = isIndustrial ? industrialLookup[buildingEntity].m_Resources.ToString() : null,
-                pos = new { x = transform.m_Position.x, y = transform.m_Position.y, z = transform.m_Position.z },
-                road_edge = roadEdgeEntity.Index,
-                curve_position = building.m_CurvePosition,
-                has_water_node = hasBuildingData && (prefabBuildingData.m_Flags & Game.Prefabs.BuildingFlags.HasWaterNode) != 0,
-                has_electricity_node = hasBuildingData && (prefabBuildingData.m_Flags & Game.Prefabs.BuildingFlags.HasLowVoltageNode) != 0,
-                has_sewage_node = hasBuildingData && (prefabBuildingData.m_Flags & Game.Prefabs.BuildingFlags.HasSewageNode) != 0,
-                service_available = hasService ? serviceAvailableLookup[buildingEntity].m_ServiceAvailable : 0,
-                service_mean_priority = hasService ? serviceAvailableLookup[buildingEntity].m_MeanPriority : 0f,
-                electricity = hasElectricity ? new
-                {
-                    wanted = electricityLookup[buildingEntity].m_WantedConsumption,
-                    fulfilled = electricityLookup[buildingEntity].m_FulfilledConsumption,
-                    connected = electricityLookup[buildingEntity].electricityConnected
-                } : null,
-                water = hasWater ? new
-                {
-                    wanted = waterLookup[buildingEntity].m_WantedConsumption,
-                    fulfilled_fresh = waterLookup[buildingEntity].m_FulfilledFresh,
-                    fulfilled_sewage = waterLookup[buildingEntity].m_FulfilledSewage,
-                    pollution = waterLookup[buildingEntity].m_Pollution,
-                    water_connected = waterLookup[buildingEntity].waterConnected,
-                    sewage_connected = waterLookup[buildingEntity].sewageConnected
-                } : null,
-                school = schoolRecord,
-                hospital = hospitalRecord
-            });
+            Publish("telex/buildings", snapshot);
+            buildings.Dispose();
         }
-
-        var snapshot = new
-        {
-            type = "buildings",
-            city_name = m_CityConfigurationSystem.cityName,
-            day = absoluteDay,
-            current_date = currentDate,
-            buildings = records
-        };
-
-        Publish("telex/buildings", snapshot);
-        buildings.Dispose();
     }
-}
 }
 
