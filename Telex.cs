@@ -253,7 +253,10 @@ namespace Telex
             string dateString = currentDate.ToString("yyy-dd-MM'T'HH:mm:ss.fff'Z'");
             int absoluteDay = TimeSystem.GetDay(m_SimulationSystem.frameIndex, timeData);
 
-            WriteDailySnapshot(absoluteDay, dateString);
+            WriteFactSnapshot(absoluteDay, dateString);
+            WriteEconomicSnapshot(absoluteDay, dateString);
+            WriteCargoSnapshot(absoluteDay, dateString);
+            WriteCrimeSnapshot(absoluteDay, dateString);
             WriteGraphSnapshot(absoluteDay, dateString);
             WriteTrafficSnapshot(absoluteDay, dateString);
             WriteDistrictSnapshot(absoluteDay, dateString);
@@ -279,54 +282,10 @@ namespace Telex
             };
         }
 
-        private void WriteDailySnapshot(int absoluteDay, String currentDate)
+        private void WriteEconomicSnapshot(int absoluteDay, string CurrentDate) 
         {
-            Population pop = EntityManager.GetComponentData<Population>(m_CitySystem.City);
-
-            // trade by resource
-            var tradeByResource = new Dictionary<string, int>();
-            foreach (var resource in kTradeResources)
+            var economySnapshot = new 
             {
-                int idx = EconomyUtils.GetResourceIndex(resource);
-                tradeByResource[resource.ToString()] = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Trade, idx);
-            }
-
-            m_TaxSystem.Update();
-            Unity.Collections.NativeArray<int> taxRates = m_TaxSystem.GetTaxRates();
-
-            var residentialTaxes = new List<int>();
-            for (int lvl = 0; lvl <= 4; lvl++)
-            {
-                residentialTaxes.Add(taxRates[(int)TaxAreaType.Residential] + taxRates[5 + lvl]);
-            }
-
-            var commercialTaxes = new Dictionary<string, int>();
-            var industrialTaxes = new Dictionary<string, int>();
-            var officeTaxes = new Dictionary<string, int>();
-
-            foreach (var resource in kTradeResources)
-            {
-                int resourceIndex = EconomyUtils.GetResourceIndex(resource);
-                if (resourceIndex != -1)
-                {
-                    string resourceName = resource.ToString().ToLower();
-                    commercialTaxes[resourceName] = taxRates[(int)TaxAreaType.Commercial] + taxRates[10 + resourceIndex];
-                    industrialTaxes[resourceName] = taxRates[(int)TaxAreaType.Industrial] + taxRates[10 + resourceIndex];
-                    officeTaxes[resourceName] = taxRates[(int)TaxAreaType.Office] + taxRates[10 + resourceIndex];
-                }
-            }
-
-            var snapshot = new
-            {
-                city_name = m_CityConfigurationSystem.cityName,
-                date = currentDate,
-
-                // Crime
-                crime_count = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeCount),
-                crime_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeRate),
-                escaped_arrests = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EscapedArrestCount),
-
-                // Economy
                 balance = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Money),
                 income_tax_residential = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxResidential),
                 income_tax_commercial = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxCommercial),
@@ -342,8 +301,6 @@ namespace Telex
                 income_fee_electricity = m_CityServiceBudgetSystem.GetIncome(IncomeSource.FeeElectricity),
                 income_fee_water = m_CityServiceBudgetSystem.GetIncome(IncomeSource.FeeWater),
                 income_government_subsidy = m_CityServiceBudgetSystem.GetIncome(IncomeSource.GovernmentSubsidy),
-
-                // Expenses by source
                 expense_service_upkeep = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ServiceUpkeep),
                 expense_loan_interest = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.LoanInterest),
                 expense_import_electricity = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportElectricity),
@@ -361,22 +318,91 @@ namespace Telex
                 expense_map_tile_upkeep = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.MapTileUpkeep),
 
                 tourist_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.TouristIncome),
-                tourists = m_CityStatisticsSystem.GetStatisticValue(StatisticType.TouristCount),
-                lodging_total = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingTotal),
-                lodging_used = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingUsed),
-                trade_by_resource = tradeByResource,
-
-                // Taxable income by sector
                 residential_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ResidentialTaxableIncome),
                 commercial_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CommercialTaxableIncome),
                 industrial_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.IndustrialTaxableIncome),
                 office_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.OfficeTaxableIncome),
+            };
+
+            Publish("telex/economy", economySnapshot);
+        }
+
+        private void WriteCrimeSnapshot(int absoluteDay, string currentDate)
+        {
+            var crimeSnapshot = new {
+                crime_count = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeCount),
+                crime_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeRate),
+                escaped_arrests = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EscapedArrestCount),
+            };
+
+            Publish("telex/crime", crimeSnapshot);
+        }
+
+        private void WriteCargoSnapshot() {
+            var cargoSnapshot = new {
+                cargo_train = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTrain),
+                cargo_ship = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountShip),
+                cargo_airplane = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountAirplane),
+                cargo_truck = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTruck),
+            };
+            Publish("telex/cargo", cargoSnapshot);
+        }
+
+        private void WriteTradeSnapshot(int absoluteDay, String currentDate)
+        {
+            var tradeByResource = new Dictionary<string, int>();
+            var residentialTaxes = new List<int>();
+            for (int lvl = 0; lvl <= 4; lvl++)
+            {
+                residentialTaxes.Add(taxRates[(int)TaxAreaType.Residential] + taxRates[5 + lvl]);
+            }
+
+            var commercialTaxes = new Dictionary<string, int>();
+            var industrialTaxes = new Dictionary<string, int>();
+            var officeTaxes = new Dictionary<string, int>();
+
+            m_TaxSystem.Update();
+            Unity.Collections.NativeArray<int> taxRates = m_TaxSystem.GetTaxRates();
+            foreach (var resource in kTradeResources)
+            {
+                if (resourceIndex != -1) {
+                    int idx = EconomyUtils.GetResourceIndex(resource);
+                    tradeByResource[resource.ToString()] = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Trade, idx);
+                    string resourceName = resource.ToString().ToLower();
+                    commercialTaxes[resourceName] = taxRates[(int)TaxAreaType.Commercial] + taxRates[10 + idx];
+                    industrialTaxes[resourceName] = taxRates[(int)TaxAreaType.Industrial] + taxRates[10 + idx];
+                    officeTaxes[resourceName] = taxRates[(int)TaxAreaType.Office] + taxRates[10 + idx];
+                }
+            }
+
+            var taxRateSnapshot = new {
                 tax_rates_residential = residentialTaxes,
                 tax_rates_commercial = commercialTaxes,
                 tax_rates_industrial = industrialTaxes,
                 tax_rates_office = officeTaxes,
+            };
+            var tradeSnapshot = new {
+                trade_by_resource = tradeByResource
+            };
+            Publish("telex/trade", tradeSnapshot);
+            Publish("telex/tax_rate", taxRateSnapshot);
+        }
 
-                // Employment
+        private void WriteTourismSnapshot(int absoluteDay, string currentDate)
+        {
+
+                var tourismSnapshot = new {
+                    tourists = m_CityStatisticsSystem.GetStatisticValue(StatisticType.TouristCount),
+                    lodging_total = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingTotal),
+                    lodging_used = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingUsed)
+                };
+
+                Publish("telex/tourism", tourismSnapshot)
+        }
+
+        private void WriteLaborSnapshot(int absoluteDay, String currentDate)
+        {
+            var laborSnapshot = new {
                 workers = m_CityStatisticsSystem.GetStatisticValue(StatisticType.WorkerCount),
                 unemployed = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Unemployed),
                 senior_worker_demand_pct = m_CityStatisticsSystem.GetStatisticValue(StatisticType.SeniorWorkerInDemandPercentage),
@@ -389,28 +415,30 @@ namespace Telex
                 service_count = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ServiceCount),
                 service_max_workers = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ServiceMaxWorkers),
                 service_wealth = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ServiceWealth),
+            };
+            
+            Publish("telex/labor", laborSnapshot);
+        }
 
-                // Mail
+
+        private void WriteMailSnapshot(int absoluteDay, string currentDate)
+        {
+
+            var mailSnapshot = new {
                 collected_mail = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CollectedMail),
                 delivered_mail = m_CityStatisticsSystem.GetStatisticValue(StatisticType.DeliveredMail),
-
-                // Transport - passengers
-                passengers_bus = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountBus),
-                passengers_tram = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountTram),
-                passengers_subway = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountSubway),
-                passengers_train = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountTrain),
-                passengers_ship = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountShip),
-                passengers_ferry = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountFerry),
-                passengers_airplane = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountAirplane),
-                passengers_taxi = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountTaxi),
-
-                // Transport - cargo
-                cargo_train = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTrain),
-                cargo_ship = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountShip),
-                cargo_airplane = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountAirplane),
-                cargo_truck = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTruck),
             };
-            Publish("telex/daily", snapshot);
+            Publish("telex/mail", mailSnapshot);
+        }
+
+        private void WriteFactSnapshot(int absoluteDay, String currentDate)
+        {
+            var snapshot = new
+            {
+                city_name = m_CityConfigurationSystem.cityName,
+                date = currentDate,
+            };
+            Publish("telex/snapshot_meta", snapshot);
         }
 
         private void WriteGraphSnapshot(int absoluteDay, String currentDate)
@@ -876,7 +904,15 @@ namespace Telex
                 stops = stops,
                 line_stops = lineStops,
                 line_segments = lineSegments,
-                line_vehicles = lineVehicles
+                line_vehicles = lineVehicles,
+                passengers_bus = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountBus),
+                passengers_tram = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountTram),
+                passengers_subway = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountSubway),
+                passengers_train = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountTrain),
+                passengers_ship = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountShip),
+                passengers_ferry = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountFerry),
+                passengers_airplane = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountAirplane),
+                passengers_taxi = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountTaxi),
             });
 
             lineEntities.Dispose();
