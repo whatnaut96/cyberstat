@@ -1,4 +1,7 @@
 using System;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using Colossal.Logging;
 using Game;
 using Game.Areas;
@@ -13,16 +16,11 @@ using Game.Simulation;
 using Game.Tools;
 using Game.Routes;
 using System.Collections.Generic;
-using System.IO;
 using System.Text;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Newtonsoft.Json;
-using MQTTnet;
-using MQTTnet.Formatter;
-using MQTTnet.Client;
-using MQTTnet.Protocol;
 
 namespace Telex
 {
@@ -36,13 +34,11 @@ namespace Telex
         }
 
         public void OnDispose() { }
-
     }
 
     public partial class TelexSystem : GameSystemBase
     {
         private CitySystem m_CitySystem;
-        //private NameSystem m_NameSystem;
         private CityStatisticsSystem m_CityStatisticsSystem;
         private SimulationSystem m_SimulationSystem;
         private TaxSystem m_TaxSystem;
@@ -64,18 +60,13 @@ namespace Telex
 
         private uint m_LastHour;
         private const uint kFramesPerHour = 262144 / 24;
-
-        private IMqttClient m_MqttClient;
-        private const string kMqttHost = "localhost";
-        private const int kMqttPort = 1883;
         private bool m_IsFirstFrame = true;
 
-        // MoveAwayReason enum order (0=None, skip)
-        // 1=NoSuitableProperty, 2=NotHappy, 3=NoAdults, 4=NoMoney
-        // 5=TouristNoTarget, 6=TouristNoHotel, 7=TouristNoMoney, 8=TripNeedNotMovedIn
+        private TcpClient m_TcpClient;
+        private SslStream m_SslStream;
+        private string m_ProcessorAddress;
+        private int m_ProcessorPort;
 
-        // Resource enum is a bitmask (ulong flags), EconomyUtils.GetResourceIndex
-        // converts to a linear index for statistic lookups
         private static readonly Resource[] kTradeResources = new Resource[]
         {
             Resource.Grain, Resource.ConvenienceFood, Resource.Food, Resource.Vegetables,
@@ -93,7 +84,6 @@ namespace Telex
         protected override void OnCreate()
         {
             m_CitySystem = World.GetOrCreateSystemManaged<CitySystem>();
-            //m_NameSystem = World.GetOrCreateSystemManaged<NameSystem>();
             m_CityStatisticsSystem = World.GetOrCreateSystemManaged<CityStatisticsSystem>();
             m_SimulationSystem = World.GetOrCreateSystemManaged<SimulationSystem>();
             m_TaxSystem = World.GetOrCreateSystemManaged<TaxSystem>();
@@ -127,9 +117,6 @@ namespace Telex
 
             m_CityServiceBudgetSystem = World.GetOrCreateSystemManaged<CityServiceBudgetSystem>();
 
-            m_LastHour = uint.MaxValue;
-
-            // Per-lane traffic flow query (CarLane sublanes that have LaneFlow)
             m_TrafficQuery = GetEntityQuery(
                 ComponentType.ReadOnly<Game.Net.CarLane>(),
                 ComponentType.ReadOnly<Game.Net.LaneFlow>(),
@@ -138,6 +125,7 @@ namespace Telex
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>()
             );
+
             m_CitizenQuery = GetEntityQuery(ComponentType.ReadOnly<Citizen>());
 
             m_DistrictQuery = GetEntityQuery(
@@ -162,54 +150,59 @@ namespace Telex
                 ComponentType.Exclude<Temp>()
             );
 
-            ConnectMqtt();
+            m_ProcessorAddress = Environment.GetEnvironmentVariable("BROADWAY_PROCESSOR_ADDRESS") ?? "localhost";
+            int.TryParse(Environment.GetEnvironmentVariable("BROADWAY_PROCESSOR_PORT"), out int port);
+            m_ProcessorPort = port > 0 ? port : 2146;
+
+            m_LastHour = uint.MaxValue;
+
+            ConnectTcp();
         }
 
         protected override void OnDestroy()
         {
-            if (m_MqttClient != null && m_MqttClient.IsConnected)
-            {
-                m_MqttClient.DisconnectAsync(
-                    new MqttClientDisconnectOptionsBuilder()
-                        .WithReason(MqttClientDisconnectOptionsReason.NormalDisconnection)
-                        .Build()
-                ).GetAwaiter().GetResult();
-            }
-            m_MqttClient?.Dispose();
+            DisconnectTcp();
             base.OnDestroy();
         }
 
-        private void ConnectMqtt()
+        private void ConnectTcp()
         {
             try
             {
-                var mqttFactory = new MqttFactory();
-                m_MqttClient = mqttFactory.CreateMqttClient();
-                var options = new MqttClientOptionsBuilder()
-                    .WithTcpServer(kMqttHost, kMqttPort)
-                    .WithProtocolVersion(MqttProtocolVersion.V500)
-                    .Build();
-                m_MqttClient.ConnectAsync(options).GetAwaiter().GetResult();
-                Mod.log.Info("Telex: MQTT connected.");
+                DisconnectTcp();
+                m_TcpClient = new TcpClient(m_ProcessorAddress, m_ProcessorPort);
+                m_SslStream = new SslStream(
+                    m_TcpClient.GetStream(),
+                    false,
+                    (sender, cert, chain, errors) => true // accept self-signed for now
+                );
+                m_SslStream.AuthenticateAsClient(m_ProcessorAddress);
+                Mod.log.Info($"Telex: TCP/TLS connected to {m_ProcessorAddress}:{m_ProcessorPort}");
             }
             catch (Exception ex)
             {
-                Mod.log.Error($"Telex: MQTT connection failed: {ex.Message}");
-                m_MqttClient = null;
+                Mod.log.Error($"Telex: TCP/TLS connection failed: {ex.Message}");
+                DisconnectTcp();
             }
         }
 
-        private void Publish(string topic, object payload)
+        private void DisconnectTcp()
         {
-            Mod.log.Info($"Telex: Attempting publish to {topic}");
+            try { m_SslStream?.Dispose(); } catch { }
+            try { m_TcpClient?.Dispose(); } catch { }
+            m_SslStream = null;
+            m_TcpClient = null;
+        }
 
-            if (m_MqttClient == null || !m_MqttClient.IsConnected)
+        private void Publish(object payload)
+        {
+            if (m_SslStream == null || !m_TcpClient.Connected)
             {
-                Mod.log.Warn($"Telex: MQTT not connected when publishing to {topic}, attempting reconnect...");
-                ConnectMqtt();
-                if (m_MqttClient == null || !m_MqttClient.IsConnected)
+                Mod.log.Warn("Telex: TCP not connected, attempting reconnect...");
+                ConnectTcp();
+                if (m_SslStream == null)
                 {
-                    Mod.log.Error($"Telex: Reconnect failed, dropping message to {topic}");
+                    Mod.log.Error("Telex: Reconnect failed, dropping payload");
                     return;
                 }
             }
@@ -217,29 +210,26 @@ namespace Telex
             try
             {
                 var json = JsonConvert.SerializeObject(payload);
-                Mod.log.Info($"Telex: Publishing {json.Length} bytes to {topic}");
-                var message = new MqttApplicationMessageBuilder()
-                    .WithTopic(topic)
-                    .WithPayload(Encoding.UTF8.GetBytes(json))
-                    .Build();
-
-                m_MqttClient.PublishAsync(message).GetAwaiter().GetResult();
-                Mod.log.Info($"Telex: Published to {topic}");
+                var bytes = Encoding.UTF8.GetBytes(json + "\n");
+                m_SslStream.Write(bytes, 0, bytes.Length);
+                m_SslStream.Flush();
+                Mod.log.Info($"Telex: Published {bytes.Length} bytes");
             }
             catch (Exception ex)
             {
-                Mod.log.Error($"Telex: Failed to publish to {topic}: {ex.Message}");
+                Mod.log.Error($"Telex: Publish failed: {ex.Message}");
+                DisconnectTcp();
             }
         }
+
         protected override void OnUpdate()
         {
             var timeData = m_TimeDataQuery.GetSingleton<Game.Common.TimeData>();
             uint currentHour = (m_SimulationSystem.frameIndex - timeData.m_FirstFrame) / kFramesPerHour;
 
             if (currentHour == m_LastHour)
-            {
                 return;
-            }
+
             if (m_IsFirstFrame)
             {
                 m_LastHour = currentHour;
@@ -253,39 +243,49 @@ namespace Telex
             string dateString = currentDate.ToString("yyy-dd-MM'T'HH:mm:ss.fff'Z'");
             int absoluteDay = TimeSystem.GetDay(m_SimulationSystem.frameIndex, timeData);
 
-            WriteFactSnapshot(absoluteDay, dateString);
-            WriteEconomicSnapshot(absoluteDay, dateString);
-            WriteCargoSnapshot(absoluteDay, dateString);
-            WriteCrimeSnapshot(absoluteDay, dateString);
-            WriteGraphSnapshot(absoluteDay, dateString);
-            WriteTrafficSnapshot(absoluteDay, dateString);
-            WriteDistrictSnapshot(absoluteDay, dateString);
-            WriteTransportSnapshot(absoluteDay, dateString);
-            WriteCitizenSnapshot(absoluteDay, dateString);
-            WriteBuildingSnapshot(absoluteDay, dateString);
-        }
+            m_TaxSystem.Update();
+            var taxRates = m_TaxSystem.GetTaxRates();
+            var residentialTaxes = GenerateResidentialTaxSnapshot(taxRates);
+            var resourceSnapshots = GenerateResourceSnapshot(taxRates);
 
-        public static int GetTaxRateForResource(TaxAreaType areaType, int rawResourceInt, NativeArray<int> taxRates)
-        {
-            Resource resourceEnum = (Resource)rawResourceInt;
-
-            int resourceIndex = EconomyUtils.GetResourceIndex(resourceEnum);
-            if (resourceIndex == -1) return 0;
-
-            return areaType switch
+            var cargoSnapshot = new Dictionary<string, int>
             {
-                TaxAreaType.Residential => taxRates[(int)TaxAreaType.Residential] + taxRates[5 + rawResourceInt], // jobLevel directly
-                TaxAreaType.Commercial => taxRates[(int)TaxAreaType.Commercial] + taxRates[10 + resourceIndex],
-                TaxAreaType.Industrial => taxRates[(int)TaxAreaType.Industrial] + taxRates[10 + resourceIndex],
-                TaxAreaType.Office => taxRates[(int)TaxAreaType.Office] + taxRates[10 + resourceIndex],
-                _ => 0
+                { "train", m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTrain) },
+                { "ship", m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountShip) },
+                { "airplane", m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountAirplane) },
+                { "truck", m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTruck) }
             };
-        }
 
-        private void WriteEconomicSnapshot(int absoluteDay, string CurrentDate) 
-        {
-            var economySnapshot = new 
+            var payload = new
             {
+                city_name = m_CityConfigurationSystem.cityName,
+                date = dateString,
+                absolute_day = absoluteDay,
+
+                // Wellbeing
+                wellbeing = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Wellbeing),
+                health = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Health),
+                crime_count = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeCount),
+                crime_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeRate),
+                escaped_arrests = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EscapedArrestCount),
+
+                // Demographics
+                children = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 0),
+                teens = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 1),
+                adults = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 2),
+                seniors = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 3),
+                households = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HouseholdCount),
+                household_wealth = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HouseholdWealth),
+                homeless = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HomelessCount),
+                birth_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.BirthRate),
+                death_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.DeathRate),
+                education_uneducated = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EducationCount, 0),
+                education_poorly_educated = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EducationCount, 1),
+                education_educated = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EducationCount, 2),
+                education_well_educated = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EducationCount, 3),
+                education_highly_educated = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EducationCount, 4),
+
+                // Economy
                 balance = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Money),
                 income_tax_residential = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxResidential),
                 income_tax_commercial = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxCommercial),
@@ -316,93 +316,19 @@ namespace Telex
                 expense_import_hearse = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportHearseService),
                 expense_import_fire = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportFireEngineService),
                 expense_map_tile_upkeep = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.MapTileUpkeep),
-
                 tourist_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.TouristIncome),
                 residential_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ResidentialTaxableIncome),
                 commercial_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CommercialTaxableIncome),
                 industrial_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.IndustrialTaxableIncome),
                 office_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.OfficeTaxableIncome),
-            };
-
-            Publish("telex/economy", economySnapshot);
-        }
-
-        private void WriteCrimeSnapshot(int absoluteDay, string currentDate)
-        {
-            var crimeSnapshot = new {
-                crime_count = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeCount),
-                crime_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeRate),
-                escaped_arrests = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EscapedArrestCount),
-            };
-
-            Publish("telex/crime", crimeSnapshot);
-        }
-
-        private void WriteCargoSnapshot() {
-            var cargoSnapshot = new {
-                cargo_train = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTrain),
-                cargo_ship = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountShip),
-                cargo_airplane = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountAirplane),
-                cargo_truck = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTruck),
-            };
-            Publish("telex/cargo", cargoSnapshot);
-        }
-
-        private void WriteTradeSnapshot(int absoluteDay, String currentDate)
-        {
-            var tradeByResource = new Dictionary<string, int>();
-            var residentialTaxes = new List<int>();
-            for (int lvl = 0; lvl <= 4; lvl++)
-            {
-                residentialTaxes.Add(taxRates[(int)TaxAreaType.Residential] + taxRates[5 + lvl]);
-            }
-
-            var commercialTaxes = new Dictionary<string, int>();
-            var industrialTaxes = new Dictionary<string, int>();
-            var officeTaxes = new Dictionary<string, int>();
-
-            m_TaxSystem.Update();
-            Unity.Collections.NativeArray<int> taxRates = m_TaxSystem.GetTaxRates();
-            foreach (var resource in kTradeResources)
-            {
-                if (resourceIndex != -1) {
-                    int idx = EconomyUtils.GetResourceIndex(resource);
-                    tradeByResource[resource.ToString()] = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Trade, idx);
-                    string resourceName = resource.ToString().ToLower();
-                    commercialTaxes[resourceName] = taxRates[(int)TaxAreaType.Commercial] + taxRates[10 + idx];
-                    industrialTaxes[resourceName] = taxRates[(int)TaxAreaType.Industrial] + taxRates[10 + idx];
-                    officeTaxes[resourceName] = taxRates[(int)TaxAreaType.Office] + taxRates[10 + idx];
-                }
-            }
-
-            var taxRateSnapshot = new {
                 tax_rates_residential = residentialTaxes,
-                tax_rates_commercial = commercialTaxes,
-                tax_rates_industrial = industrialTaxes,
-                tax_rates_office = officeTaxes,
-            };
-            var tradeSnapshot = new {
-                trade_by_resource = tradeByResource
-            };
-            Publish("telex/trade", tradeSnapshot);
-            Publish("telex/tax_rate", taxRateSnapshot);
-        }
+                resources = resourceSnapshots,
+                cargo = cargoSnapshot,
+                tourists = m_CityStatisticsSystem.GetStatisticValue(StatisticType.TouristCount),
+                lodging_total = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingTotal),
+                lodging_used = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingUsed),
 
-        private void WriteTourismSnapshot(int absoluteDay, string currentDate)
-        {
-
-                var tourismSnapshot = new {
-                    tourists = m_CityStatisticsSystem.GetStatisticValue(StatisticType.TouristCount),
-                    lodging_total = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingTotal),
-                    lodging_used = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingUsed)
-                };
-
-                Publish("telex/tourism", tourismSnapshot)
-        }
-
-        private void WriteLaborSnapshot(int absoluteDay, String currentDate)
-        {
-            var laborSnapshot = new {
+                // Labor
                 workers = m_CityStatisticsSystem.GetStatisticValue(StatisticType.WorkerCount),
                 unemployed = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Unemployed),
                 senior_worker_demand_pct = m_CityStatisticsSystem.GetStatisticValue(StatisticType.SeniorWorkerInDemandPercentage),
@@ -415,33 +341,63 @@ namespace Telex
                 service_count = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ServiceCount),
                 service_max_workers = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ServiceMaxWorkers),
                 service_wealth = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ServiceWealth),
-            };
-            
-            Publish("telex/labor", laborSnapshot);
-        }
-
-
-        private void WriteMailSnapshot(int absoluteDay, string currentDate)
-        {
-
-            var mailSnapshot = new {
                 collected_mail = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CollectedMail),
                 delivered_mail = m_CityStatisticsSystem.GetStatisticValue(StatisticType.DeliveredMail),
+
+                districts = GenerateDistrictSnapshot(),
+                graph = GenerateGraphSnapshot(),
+                traffic = GenerateTrafficSnapshot(),
+                buildings = GenerateBuildingSnapshot(),
+                transport = GenerateTransportSnapshot(),
+                citizens = GenerateCitizenSnapshot()
             };
-            Publish("telex/mail", mailSnapshot);
+
+            Publish(payload);
         }
 
-        private void WriteFactSnapshot(int absoluteDay, String currentDate)
+        private Dictionary<string, int> GenerateResidentialTaxSnapshot(NativeArray<int> taxRates)
         {
-            var snapshot = new
+            return new Dictionary<string, int>
             {
-                city_name = m_CityConfigurationSystem.cityName,
-                date = currentDate,
+                { "uneducated", taxRates[(int)TaxAreaType.Residential] + taxRates[5] },
+                { "poorly_educated", taxRates[(int)TaxAreaType.Residential] + taxRates[6] },
+                { "educated", taxRates[(int)TaxAreaType.Residential] + taxRates[7] },
+                { "well_educated", taxRates[(int)TaxAreaType.Residential] + taxRates[8] },
+                { "highly_educated", taxRates[(int)TaxAreaType.Residential] + taxRates[9] }
             };
-            Publish("telex/snapshot_meta", snapshot);
         }
 
-        private void WriteGraphSnapshot(int absoluteDay, String currentDate)
+        private class ResourceSnapshotData
+        {
+            public int TradeValue { get; set; }
+            public int CommercialTax { get; set; }
+            public int IndustrialTax { get; set; }
+            public int OfficeTax { get; set; }
+        }
+
+        private Dictionary<string, ResourceSnapshotData> GenerateResourceSnapshot(NativeArray<int> taxRates)
+        {
+            var result = new Dictionary<string, ResourceSnapshotData>();
+
+            foreach (var resource in kTradeResources)
+            {
+                int idx = EconomyUtils.GetResourceIndex(resource);
+                if (idx == -1) continue;
+
+                string resourceName = resource.ToString().ToLower();
+                result[resourceName] = new ResourceSnapshotData
+                {
+                    TradeValue = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Trade, idx),
+                    CommercialTax = taxRates[(int)TaxAreaType.Commercial] + taxRates[10 + idx],
+                    IndustrialTax = taxRates[(int)TaxAreaType.Industrial] + taxRates[10 + idx],
+                    OfficeTax = taxRates[(int)TaxAreaType.Office] + taxRates[10 + idx]
+                };
+            }
+
+            return result;
+        }
+
+        private List<object> GenerateGraphSnapshot()
         {
             var edges = m_EdgeQuery.ToEntityArray(Allocator.Temp);
             var records = new List<object>(edges.Length);
@@ -472,13 +428,10 @@ namespace Telex
                     }
                 }
 
-                // Road-level traffic data (present on road edges, not all edge types)
                 object trafficRecord = null;
                 if (EntityManager.HasComponent<Game.Net.Road>(edgeEntity))
                 {
                     var road = EntityManager.GetComponentData<Game.Net.Road>(edgeEntity);
-                    // Speed: distance/duration per lane group, expressed as float4 (4 carriageway groups)
-                    // Volume proxy: sqrt(distance * 5.333) matches game infoview formula
                     var dur0 = road.m_TrafficFlowDuration0;
                     var dur1 = road.m_TrafficFlowDuration1;
                     var dist0 = road.m_TrafficFlowDistance0;
@@ -488,16 +441,13 @@ namespace Telex
                     float4 vol0 = math.sqrt((dist0 + dist1) * 2.6666667f);
                     trafficRecord = new
                     {
-                        // direction 0 (forward lanes) per carriageway group
                         speed0 = new float[] { speed0.x, speed0.y, speed0.z, speed0.w },
                         speed1 = new float[] { speed1.x, speed1.y, speed1.z, speed1.w },
-                        // combined volume proxy (matches game TrafficVolume infoview)
                         volume = new float[] { vol0.x, vol0.y, vol0.z, vol0.w },
-                        // raw accumulators for downstream recomputation
                         duration0 = new float[] { dur0.x, dur0.y, dur0.z, dur0.w },
                         duration1 = new float[] { dur1.x, dur1.y, dur1.z, dur1.w },
                         distance0 = new float[] { dist0.x, dist0.y, dist0.z, dist0.w },
-                        distance1 = new float[] { dist1.x, dist1.y, dist1.z, dist1.w },
+                        distance1 = new float[] { dist1.x, dist1.y, dist1.z, dist1.w }
                     };
                 }
 
@@ -519,41 +469,26 @@ namespace Telex
                 });
             }
 
-            var graphSnapshot = new
-            {
-                type = "graph",
-                city_name = m_CityConfigurationSystem.cityName,
-                day = absoluteDay,
-                current_date = currentDate,
-                edges = records
-            };
-            Publish("telex/graph", graphSnapshot);
             edges.Dispose();
+            return records;
         }
 
-        private void WriteTrafficSnapshot(int absoluteDay, string currentDate)
+        private List<object> GenerateTrafficSnapshot()
         {
-            // Per-lane flow data. Each CarLane entity with LaneFlow is a sublane of a road edge.
-            // EdgeLane.m_EdgeDelta tells us where on the edge this lane sits (0=start, 1=end).
-            // Lane.m_StartNode / m_EndNode carry the owner edge index via PathNode.
             var lanes = m_TrafficQuery.ToEntityArray(Allocator.Temp);
             var records = new List<object>(lanes.Length);
-
             var ownerLookup = GetComponentLookup<Game.Common.Owner>(true);
 
             foreach (var laneEntity in lanes)
             {
                 var flow = EntityManager.GetComponentData<Game.Net.LaneFlow>(laneEntity);
                 var edgeLane = EntityManager.GetComponentData<Game.Net.EdgeLane>(laneEntity);
-                var lane = EntityManager.GetComponentData<Game.Net.Lane>(laneEntity);
                 var carLane = EntityManager.GetComponentData<Game.Net.CarLane>(laneEntity);
 
-                // Compute average speed for this lane (same formula as NetUtils.GetTrafficFlowSpeed)
                 float4 dur = flow.m_Duration;
                 float4 dist = flow.m_Distance;
                 float4 speed = math.select(0f, dist / dur, dur > 0f);
 
-                // Resolve owner edge entity index
                 int ownerEdgeIndex = -1;
                 int ownerEdgeVersion = -1;
                 if (ownerLookup.TryGetComponent(laneEntity, out var owner))
@@ -568,38 +503,24 @@ namespace Telex
                     version = laneEntity.Version,
                     owner_edge = ownerEdgeIndex,
                     owner_edge_version = ownerEdgeVersion,
-                    // EdgeDelta: x=position along edge at lane start, y=at lane end (0..1)
                     edge_delta_start = edgeLane.m_EdgeDelta.x,
                     edge_delta_end = edgeLane.m_EdgeDelta.y,
-                    // Carriageway group encodes direction + carriageway index
                     carriageway_group = carLane.m_CarriagewayGroup,
-                    // Speed in m/s per lane group component (usually only .x is non-zero for a single lane)
                     speed = new float[] { speed.x, speed.y, speed.z, speed.w },
-                    // Raw accumulators
                     duration = new float[] { dur.x, dur.y, dur.z, dur.w },
                     distance = new float[] { dist.x, dist.y, dist.z, dist.w },
-                    // m_Next: fractional position of next vehicle ahead (for congestion detection)
                     next_x = flow.m_Next.x,
-                    next_y = flow.m_Next.y,
+                    next_y = flow.m_Next.y
                 });
             }
 
-            var snapshot = new
-            {
-                type = "traffic",
-                city_name = m_CityConfigurationSystem.cityName,
-                day = absoluteDay,
-                current_date = currentDate,
-                lanes = records
-            };
-            Publish("telex/traffic", snapshot);
             lanes.Dispose();
+            return records;
         }
-
 
         private object MakeEntityRef(Entity entity)
         {
-            return entity == Entity.Null ? null : new { entity = entity.Index, version = entity.Version };
+            return entity == Entity.Null ? null : (object)new { entity = entity.Index, version = entity.Version };
         }
 
         private int? GetDistrictId(Entity entity)
@@ -612,14 +533,13 @@ namespace Telex
             return null;
         }
 
-        private void WriteDistrictSnapshot(int absoluteDay, string currentDate)
+        private List<object> GenerateDistrictSnapshot()
         {
             var districts = m_DistrictQuery.ToEntityArray(Allocator.Temp);
             var records = new List<object>(districts.Length);
 
             Game.UI.NameSystem activeNameSystem = null;
-            try { activeNameSystem = base.World.GetExistingSystemManaged<Game.UI.NameSystem>(); }
-            catch { }
+            try { activeNameSystem = base.World.GetExistingSystemManaged<Game.UI.NameSystem>(); } catch { }
 
             foreach (var districtEntity in districts)
             {
@@ -628,9 +548,7 @@ namespace Telex
                 if (activeNameSystem != null)
                 {
                     if (!activeNameSystem.TryGetCustomName(districtEntity, out districtName))
-                    {
                         districtName = activeNameSystem.GetRenderedLabelName(districtEntity);
-                    }
                 }
                 if (string.IsNullOrEmpty(districtName)) districtName = $"District {districtEntity.Index}";
 
@@ -643,18 +561,11 @@ namespace Telex
                 });
             }
 
-            Publish("telex/dim/districts", new
-            {
-                type = "districts",
-                city_name = m_CityConfigurationSystem.cityName,
-                day = absoluteDay,
-                current_date = currentDate,
-                districts = records
-            });
             districts.Dispose();
+            return records;
         }
 
-        private void WriteTransportSnapshot(int absoluteDay, string currentDate)
+        private object GenerateTransportSnapshot()
         {
             var lineEntities = m_TransportLineQuery.ToEntityArray(Allocator.Temp);
             var stopEntities = m_TransportStopQuery.ToEntityArray(Allocator.Temp);
@@ -682,20 +593,15 @@ namespace Telex
                 var line = EntityManager.GetComponentData<Game.Routes.TransportLine>(lineEntity);
                 var prefabRef = EntityManager.GetComponentData<Game.Prefabs.PrefabRef>(lineEntity);
 
-                int? routeNumber = null;
-                if (routeNumberLookup.HasComponent(lineEntity))
-                    routeNumber = routeNumberLookup[lineEntity].m_Number;
+                int? routeNumber = routeNumberLookup.HasComponent(lineEntity)
+                    ? routeNumberLookup[lineEntity].m_Number
+                    : (int?)null;
 
                 object routeInfo = null;
                 if (routeInfoLookup.HasComponent(lineEntity))
                 {
                     var info = routeInfoLookup[lineEntity];
-                    routeInfo = new
-                    {
-                        duration = info.m_Duration,
-                        distance = info.m_Distance,
-                        flags = (int)info.m_Flags
-                    };
+                    routeInfo = new { duration = info.m_Duration, distance = info.m_Distance, flags = (int)info.m_Flags };
                 }
 
                 object color = null;
@@ -741,7 +647,6 @@ namespace Telex
                 if (EntityManager.HasBuffer<Game.Routes.RouteWaypoint>(lineEntity))
                 {
                     var waypoints = EntityManager.GetBuffer<Game.Routes.RouteWaypoint>(lineEntity);
-
                     for (int i = 0; i < waypoints.Length; i++)
                     {
                         Entity waypointEntity = waypoints[i].m_Waypoint;
@@ -755,9 +660,7 @@ namespace Telex
 
                         Entity connectedEntity = Entity.Null;
                         if (connectedLookup.TryGetComponent(waypointEntity, out var connected))
-                        {
                             connectedEntity = connected.m_Connected;
-                        }
 
                         object waiting = null;
                         if (waitingPassengersLookup.TryGetComponent(waypointEntity, out var w))
@@ -894,14 +797,13 @@ namespace Telex
                 });
             }
 
-            Publish("telex/transport", new
+            lineEntities.Dispose();
+            stopEntities.Dispose();
+
+            return new
             {
-                type = "transport",
-                city_name = m_CityConfigurationSystem.cityName,
-                day = absoluteDay,
-                current_date = currentDate,
-                lines = lines,
-                stops = stops,
+                lines,
+                stops,
                 line_stops = lineStops,
                 line_segments = lineSegments,
                 line_vehicles = lineVehicles,
@@ -912,13 +814,11 @@ namespace Telex
                 passengers_ship = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountShip),
                 passengers_ferry = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountFerry),
                 passengers_airplane = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountAirplane),
-                passengers_taxi = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountTaxi),
-            });
-
-            lineEntities.Dispose();
-            stopEntities.Dispose();
+                passengers_taxi = m_CityStatisticsSystem.GetStatisticValue(StatisticType.PassengerCountTaxi)
+            };
         }
-        private void WriteCitizenSnapshot(int absoluteDay, string currentDate)
+
+        private List<object> GenerateCitizenSnapshot()
         {
             var citizens = m_CitizenQuery.ToEntityArray(Allocator.Temp);
             var records = new List<object>(citizens.Length);
@@ -930,7 +830,6 @@ namespace Telex
             foreach (var citizenEntity in citizens)
             {
                 var citizenData = EntityManager.GetComponentData<Citizen>(citizenEntity);
-                int ageGroupValue = (int)citizenData.GetAge();
 
                 int? householdId = null;
                 int? homeBuildingId = null;
@@ -945,7 +844,6 @@ namespace Telex
                     if (propertyRenterLookup.TryGetComponent(household, out var renter))
                     {
                         Entity homeBuilding = renter.m_Property;
-
                         if (homeBuilding != Entity.Null && EntityManager.Exists(homeBuilding))
                         {
                             homeBuildingId = homeBuilding.Index;
@@ -953,9 +851,7 @@ namespace Telex
 
                             if (currentDistrictLookup.TryGetComponent(homeBuilding, out var currentDistrict)
                                 && currentDistrict.m_District != Entity.Null)
-                            {
                                 homeDistrictId = currentDistrict.m_District.Index;
-                            }
                         }
                     }
                 }
@@ -965,7 +861,7 @@ namespace Telex
                     entity = citizenEntity.Index,
                     version = citizenEntity.Version,
                     household_id = householdId,
-                    age = ageGroupValue,
+                    age = (int)citizenData.GetAge(),
                     education = citizenData.GetEducationLevel(),
                     state = (int)citizenData.m_State,
                     wellbeing = citizenData.m_WellBeing,
@@ -976,19 +872,11 @@ namespace Telex
                 });
             }
 
-            var snapshot = new
-            {
-                type = "citizens",
-                city_name = m_CityConfigurationSystem.cityName,
-                day = absoluteDay,
-                current_date = currentDate,
-                citizens = records
-            };
-
-            Publish("telex/citizens", snapshot);
             citizens.Dispose();
+            return records;
         }
-        private void WriteBuildingSnapshot(int absoluteDay, string currentDate)
+
+        private List<object> GenerateBuildingSnapshot()
         {
             var buildings = m_BuildingQuery.ToEntityArray(Allocator.Temp);
             var records = new List<object>(buildings.Length);
@@ -1004,14 +892,8 @@ namespace Telex
             var officeLookup = GetComponentLookup<Game.Buildings.OfficeProperty>(true);
 
             Game.UI.NameSystem activeNameSystem = null;
-            try
-            {
-                activeNameSystem = base.World.GetExistingSystemManaged<Game.UI.NameSystem>();
-            }
-            catch (Exception ex)
-            {
-                Mod.log.Error($"[Telex] Failed to retrieve NameSystem: {ex.Message}");
-            }
+            try { activeNameSystem = base.World.GetExistingSystemManaged<Game.UI.NameSystem>(); }
+            catch (Exception ex) { Mod.log.Error($"[Telex] Failed to retrieve NameSystem: {ex.Message}"); }
 
             foreach (var buildingEntity in buildings)
             {
@@ -1039,51 +921,36 @@ namespace Telex
                     ? EntityManager.GetComponentData<Game.Prefabs.BuildingData>(prefab)
                     : default;
 
-                // 1. RESOLVE DISTRICT NAMES
                 int? districtId = null;
                 string districtName = null;
                 Entity targetDistrictEntity = Entity.Null;
 
                 if (EntityManager.HasComponent<Game.Areas.CurrentDistrict>(buildingEntity))
-                {
                     targetDistrictEntity = EntityManager.GetComponentData<Game.Areas.CurrentDistrict>(buildingEntity).m_District;
-                }
 
                 if (targetDistrictEntity == Entity.Null && EntityManager.HasComponent<Game.Common.Owner>(buildingEntity))
                 {
                     var owner = EntityManager.GetComponentData<Game.Common.Owner>(buildingEntity).m_Owner;
                     if (EntityManager.HasComponent<Game.Areas.District>(owner))
-                    {
                         targetDistrictEntity = owner;
-                    }
                 }
 
                 if (targetDistrictEntity != Entity.Null)
                 {
                     districtId = targetDistrictEntity.Index;
-
                     if (activeNameSystem != null)
                     {
-                        // TryGetCustomName covers player-renamed districts,
-                        // GetRenderedLabelName covers auto-generated names like "Sterling Square"
                         if (!activeNameSystem.TryGetCustomName(targetDistrictEntity, out districtName))
-                        {
                             districtName = activeNameSystem.GetRenderedLabelName(targetDistrictEntity);
-                        }
                     }
-
                     if (string.IsNullOrEmpty(districtName))
-                    {
                         districtName = $"District {targetDistrictEntity.Index}";
-                    }
                 }
                 else
                 {
                     districtName = m_CityConfigurationSystem.cityName;
                 }
 
-                // 2. RESOLVE STREET NAMES via BuildingUtils.GetAddress
-                // This mirrors exactly how the game itself resolves building addresses
                 string streetName = "";
                 int houseNumber = 0;
                 Entity roadEdgeEntity = building.m_RoadEdge;
@@ -1099,13 +966,10 @@ namespace Telex
                         if (activeNameSystem != null && aggregateRoad != Entity.Null)
                         {
                             if (!activeNameSystem.TryGetCustomName(aggregateRoad, out streetName))
-                            {
                                 streetName = activeNameSystem.GetRenderedLabelName(aggregateRoad);
-                            }
                         }
                     }
                 }
-
                 if (streetName == null) streetName = "";
 
                 object schoolRecord = null;
@@ -1176,18 +1040,8 @@ namespace Telex
                 });
             }
 
-            var snapshot = new
-            {
-                type = "buildings",
-                city_name = m_CityConfigurationSystem.cityName,
-                day = absoluteDay,
-                current_date = currentDate,
-                buildings = records
-            };
-
-            Publish("telex/buildings", snapshot);
             buildings.Dispose();
+            return records;
         }
     }
 }
-
