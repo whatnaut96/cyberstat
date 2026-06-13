@@ -94,6 +94,7 @@ namespace Telex
             m_EdgeQuery = GetEntityQuery(
                 ComponentType.ReadOnly<Game.Net.Edge>(),
                 ComponentType.ReadOnly<Game.Net.Curve>(),
+
                 ComponentType.Exclude<Deleted>(),
                 ComponentType.Exclude<Temp>()
             );
@@ -256,36 +257,16 @@ namespace Telex
                 { "truck", m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTruck) }
             };
 
-            var payload = new
+            var crime = new
             {
-                city_name = m_CityConfigurationSystem.cityName,
-                date = dateString,
-                absolute_day = absoluteDay,
-
-                // Wellbeing
-                wellbeing = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Wellbeing),
-                health = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Health),
                 crime_count = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeCount),
                 crime_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CrimeRate),
                 escaped_arrests = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EscapedArrestCount),
+            };
 
-                // Demographics
-                children = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 0),
-                teens = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 1),
-                adults = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 2),
-                seniors = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Age, 3),
-                households = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HouseholdCount),
-                household_wealth = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HouseholdWealth),
-                homeless = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HomelessCount),
-                birth_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.BirthRate),
-                death_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.DeathRate),
-                education_uneducated = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EducationCount, 0),
-                education_poorly_educated = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EducationCount, 1),
-                education_educated = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EducationCount, 2),
-                education_well_educated = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EducationCount, 3),
-                education_highly_educated = m_CityStatisticsSystem.GetStatisticValue(StatisticType.EducationCount, 4),
+            var economics = new
+            {
 
-                // Economy
                 balance = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Money),
                 income_tax_residential = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxResidential),
                 income_tax_commercial = m_CityServiceBudgetSystem.GetIncome(IncomeSource.TaxCommercial),
@@ -316,18 +297,23 @@ namespace Telex
                 expense_import_hearse = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportHearseService),
                 expense_import_fire = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.ImportFireEngineService),
                 expense_map_tile_upkeep = m_CityServiceBudgetSystem.GetExpense(ExpenseSource.MapTileUpkeep),
-                tourist_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.TouristIncome),
                 residential_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ResidentialTaxableIncome),
                 commercial_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CommercialTaxableIncome),
                 industrial_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.IndustrialTaxableIncome),
                 office_taxable_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.OfficeTaxableIncome),
                 tax_rates_residential = residentialTaxes,
-                resources = resourceSnapshots,
-                cargo = cargoSnapshot,
+            };
+
+            var tourismSnapshot = new
+            {
                 tourists = m_CityStatisticsSystem.GetStatisticValue(StatisticType.TouristCount),
+                tourist_income = m_CityStatisticsSystem.GetStatisticValue(StatisticType.TouristIncome),
                 lodging_total = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingTotal),
                 lodging_used = m_CityStatisticsSystem.GetStatisticValue(StatisticType.LodgingUsed),
+            };
 
+            var laborSnapshot = new
+            {
                 // Labor
                 workers = m_CityStatisticsSystem.GetStatisticValue(StatisticType.WorkerCount),
                 unemployed = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Unemployed),
@@ -341,12 +327,33 @@ namespace Telex
                 service_count = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ServiceCount),
                 service_max_workers = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ServiceMaxWorkers),
                 service_wealth = m_CityStatisticsSystem.GetStatisticValue(StatisticType.ServiceWealth),
+            };
+
+            var mailSnapshot = new
+            {
                 collected_mail = m_CityStatisticsSystem.GetStatisticValue(StatisticType.CollectedMail),
                 delivered_mail = m_CityStatisticsSystem.GetStatisticValue(StatisticType.DeliveredMail),
+            };
 
+            var payload = new
+            {
+                city_name = m_CityConfigurationSystem.cityName,
+                date = dateString,
+                absolute_day = absoluteDay,
+
+                // TODO: Determine if this is even worth keeping
+                homeless = m_CityStatisticsSystem.GetStatisticValue(StatisticType.HomelessCount),
+                birth_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.BirthRate),
+                death_rate = m_CityStatisticsSystem.GetStatisticValue(StatisticType.DeathRate),
+
+                economy = economics,
+                resources = resourceSnapshots,
+                cargo = cargoSnapshot,
+                tourism = tourismSnapshot,
+                labor = laborSnapshot,
+                mail = mailSnapshot,
                 districts = GenerateDistrictSnapshot(),
-                graph = GenerateGraphSnapshot(),
-                traffic = GenerateTrafficSnapshot(),
+                roads = GenerateRoadSnapshot(),
                 buildings = GenerateBuildingSnapshot(),
                 transport = GenerateTransportSnapshot(),
                 citizens = GenerateCitizenSnapshot()
@@ -369,10 +376,10 @@ namespace Telex
 
         private class ResourceSnapshotData
         {
-            public int TradeValue { get; set; }
-            public int CommercialTax { get; set; }
-            public int IndustrialTax { get; set; }
-            public int OfficeTax { get; set; }
+            public int trade_value { get; set; }
+            public int commercial_tax { get; set; }
+            public int industrial_tax { get; set; }
+            public int office_tax { get; set; }
         }
 
         private Dictionary<string, ResourceSnapshotData> GenerateResourceSnapshot(NativeArray<int> taxRates)
@@ -387,18 +394,57 @@ namespace Telex
                 string resourceName = resource.ToString().ToLower();
                 result[resourceName] = new ResourceSnapshotData
                 {
-                    TradeValue = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Trade, idx),
-                    CommercialTax = taxRates[(int)TaxAreaType.Commercial] + taxRates[10 + idx],
-                    IndustrialTax = taxRates[(int)TaxAreaType.Industrial] + taxRates[10 + idx],
-                    OfficeTax = taxRates[(int)TaxAreaType.Office] + taxRates[10 + idx]
+                    trade_value = m_CityStatisticsSystem.GetStatisticValue(StatisticType.Trade, idx),
+                    commercial_tax = taxRates[(int)TaxAreaType.Commercial] + taxRates[10 + idx],
+                    industrial_tax = taxRates[(int)TaxAreaType.Industrial] + taxRates[10 + idx],
+                    office_tax = taxRates[(int)TaxAreaType.Office] + taxRates[10 + idx]
                 };
             }
 
             return result;
         }
 
-        private List<object> GenerateGraphSnapshot()
+        private List<object> GenerateRoadSnapshot()
         {
+            var ownerLookup = GetComponentLookup<Game.Common.Owner>(true);
+
+            var lanes = m_TrafficQuery.ToEntityArray(Allocator.Temp);
+            var lanesByEdge = new Dictionary<int, List<object>>();
+
+            foreach (var laneEntity in lanes)
+            {
+                var flow = EntityManager.GetComponentData<Game.Net.LaneFlow>(laneEntity);
+                var edgeLane = EntityManager.GetComponentData<Game.Net.EdgeLane>(laneEntity);
+                var carLane = EntityManager.GetComponentData<Game.Net.CarLane>(laneEntity);
+
+                float4 dur = flow.m_Duration;
+                float4 dist = flow.m_Distance;
+                float4 speed = math.select(0f, dist / dur, dur > 0f);
+
+                int ownerEdgeIndex = -1;
+                if (ownerLookup.TryGetComponent(laneEntity, out var owner))
+                    ownerEdgeIndex = owner.m_Owner.Index;
+
+                if (!lanesByEdge.TryGetValue(ownerEdgeIndex, out var list))
+                    lanesByEdge[ownerEdgeIndex] = list = new List<object>();
+
+                list.Add(new
+                {
+                    entity = laneEntity.Index,
+                    owner_edge = ownerEdgeIndex,
+                    edge_delta_start = edgeLane.m_EdgeDelta.x,
+                    edge_delta_end = edgeLane.m_EdgeDelta.y,
+                    carriageway_group = carLane.m_CarriagewayGroup,
+                    speed = new float[] { speed.x, speed.y, speed.z, speed.w },
+                    duration = new float[] { dur.x, dur.y, dur.z, dur.w },
+                    distance = new float[] { dist.x, dist.y, dist.z, dist.w },
+                    next_x = flow.m_Next.x,
+                    next_y = flow.m_Next.y
+                });
+            }
+
+            lanes.Dispose();
+
             var edges = m_EdgeQuery.ToEntityArray(Allocator.Temp);
             var records = new List<object>(edges.Length);
 
@@ -428,7 +474,7 @@ namespace Telex
                     }
                 }
 
-                object trafficRecord = null;
+                object roadTraffic = null;
                 if (EntityManager.HasComponent<Game.Net.Road>(edgeEntity))
                 {
                     var road = EntityManager.GetComponentData<Game.Net.Road>(edgeEntity);
@@ -439,7 +485,7 @@ namespace Telex
                     float4 speed0 = math.select(0f, dist0 / dur0, dur0 > 0f);
                     float4 speed1 = math.select(0f, dist1 / dur1, dur1 > 0f);
                     float4 vol0 = math.sqrt((dist0 + dist1) * 2.6666667f);
-                    trafficRecord = new
+                    roadTraffic = new
                     {
                         speed0 = new float[] { speed0.x, speed0.y, speed0.z, speed0.w },
                         speed1 = new float[] { speed1.x, speed1.y, speed1.z, speed1.w },
@@ -451,10 +497,11 @@ namespace Telex
                     };
                 }
 
+                lanesByEdge.TryGetValue(edgeEntity.Index, out var edgeLanes);
+
                 records.Add(new
                 {
-                    entity = edgeEntity.Index,
-                    version = edgeEntity.Version,
+                    entity_id = edgeEntity.Index,
                     start_entity = edge.m_Start.Index,
                     end_entity = edge.m_End.Index,
                     start_pos = new { x = startNode.m_Position.x, y = startNode.m_Position.y, z = startNode.m_Position.z },
@@ -465,56 +512,12 @@ namespace Telex
                     curve_c = new { x = curve.m_Bezier.c.x, y = curve.m_Bezier.c.y, z = curve.m_Bezier.c.z },
                     curve_d = new { x = curve.m_Bezier.d.x, y = curve.m_Bezier.d.y, z = curve.m_Bezier.d.z },
                     service_coverage = coverageList,
-                    traffic = trafficRecord
+                    road_traffic = roadTraffic,
+                    lanes = edgeLanes
                 });
             }
 
             edges.Dispose();
-            return records;
-        }
-
-        private List<object> GenerateTrafficSnapshot()
-        {
-            var lanes = m_TrafficQuery.ToEntityArray(Allocator.Temp);
-            var records = new List<object>(lanes.Length);
-            var ownerLookup = GetComponentLookup<Game.Common.Owner>(true);
-
-            foreach (var laneEntity in lanes)
-            {
-                var flow = EntityManager.GetComponentData<Game.Net.LaneFlow>(laneEntity);
-                var edgeLane = EntityManager.GetComponentData<Game.Net.EdgeLane>(laneEntity);
-                var carLane = EntityManager.GetComponentData<Game.Net.CarLane>(laneEntity);
-
-                float4 dur = flow.m_Duration;
-                float4 dist = flow.m_Distance;
-                float4 speed = math.select(0f, dist / dur, dur > 0f);
-
-                int ownerEdgeIndex = -1;
-                int ownerEdgeVersion = -1;
-                if (ownerLookup.TryGetComponent(laneEntity, out var owner))
-                {
-                    ownerEdgeIndex = owner.m_Owner.Index;
-                    ownerEdgeVersion = owner.m_Owner.Version;
-                }
-
-                records.Add(new
-                {
-                    entity = laneEntity.Index,
-                    version = laneEntity.Version,
-                    owner_edge = ownerEdgeIndex,
-                    owner_edge_version = ownerEdgeVersion,
-                    edge_delta_start = edgeLane.m_EdgeDelta.x,
-                    edge_delta_end = edgeLane.m_EdgeDelta.y,
-                    carriageway_group = carLane.m_CarriagewayGroup,
-                    speed = new float[] { speed.x, speed.y, speed.z, speed.w },
-                    duration = new float[] { dur.x, dur.y, dur.z, dur.w },
-                    distance = new float[] { dist.x, dist.y, dist.z, dist.w },
-                    next_x = flow.m_Next.x,
-                    next_y = flow.m_Next.y
-                });
-            }
-
-            lanes.Dispose();
             return records;
         }
 
@@ -859,7 +862,6 @@ namespace Telex
                 records.Add(new
                 {
                     entity = citizenEntity.Index,
-                    version = citizenEntity.Version,
                     household_id = householdId,
                     age = (int)citizenData.GetAge(),
                     education = citizenData.GetEducationLevel(),
@@ -867,8 +869,6 @@ namespace Telex
                     wellbeing = citizenData.m_WellBeing,
                     health = citizenData.m_Health,
                     home_building_id = homeBuildingId,
-                    home_building_version = homeBuildingVersion,
-                    home_district_id = homeDistrictId
                 });
             }
 
