@@ -21,21 +21,21 @@ using Unity.Entities;
 using Unity.Mathematics;
 using Newtonsoft.Json;
 
-namespace Telex
+namespace Cyberstat
 {
     public class Mod : IMod
     {
-        public static ILog log = LogManager.GetLogger($"{nameof(Telex)}.{nameof(Mod)}").SetShowsErrorsInUI(false);
+        public static ILog log = LogManager.GetLogger($"{nameof(Cyberstat)}.{nameof(Mod)}").SetShowsErrorsInUI(false);
 
         public void OnLoad(UpdateSystem updateSystem)
         {
-            updateSystem.UpdateAt<TelexSystem>(SystemUpdatePhase.GameSimulation);
+            updateSystem.UpdateAt<CyberstatSystem>(SystemUpdatePhase.GameSimulation);
         }
 
         public void OnDispose() { }
     }
 
-    public partial class TelexSystem : GameSystemBase
+    public partial class CyberstatSystem : GameSystemBase
     {
         private CitySystem m_CitySystem;
         private CityStatisticsSystem m_CityStatisticsSystem;
@@ -169,7 +169,7 @@ namespace Telex
             m_LastHour = uint.MaxValue;
 
             try { ConnectHttp(); }
-            catch { Mod.log.Warn("Telex: Early connect failed, will retry on first publish"); }
+            catch { Mod.log.Warn("Cyberstat: Early connect failed, will retry on first publish"); }
         }
 
         protected override void OnDestroy()
@@ -189,11 +189,11 @@ namespace Telex
                     ServerCertificateCustomValidationCallback = (msg, cert, chain, errors) => true // accept self-signed for now
                 };
                 m_HttpClient = new HttpClient(handler) { BaseAddress = new Uri(m_ProcessorBaseUrl) };
-                Mod.log.Info($"Telex: HTTP client ready for {m_ProcessorBaseUrl}");
+                Mod.log.Info($"Cyberstat: HTTP client ready for {m_ProcessorBaseUrl}");
             }
             catch (Exception ex)
             {
-                Mod.log.Error($"Telex: HTTP client setup failed: {ex.Message}");
+                Mod.log.Error($"Cyberstat: HTTP client setup failed: {ex.Message}");
                 DisconnectHttp();
             }
         }
@@ -208,11 +208,11 @@ namespace Telex
         {
             if (m_HttpClient == null)
             {
-                Mod.log.Warn("Telex: HTTP client not ready, attempting reconnect...");
+                Mod.log.Warn("Cyberstat: HTTP client not ready, attempting reconnect...");
                 ConnectHttp();
                 if (m_HttpClient == null)
                 {
-                    Mod.log.Error("Telex: Reconnect failed, dropping payload");
+                    Mod.log.Error("Cyberstat: Reconnect failed, dropping payload");
                     return;
                 }
             }
@@ -234,13 +234,13 @@ namespace Telex
                     .GetAwaiter().GetResult();
 
                 if (!response.IsSuccessStatusCode)
-                    Mod.log.Error($"Telex: Publish '{type}' failed, status {(int)response.StatusCode}");
+                    Mod.log.Error($"Cyberstat: Publish '{type}' failed, status {(int)response.StatusCode}");
                 else
-                    Mod.log.Info($"Telex: Published '{type}' ({json.Length} bytes)");
+                    Mod.log.Info($"Cyberstat: Published '{type}' ({json.Length} bytes)");
             }
             catch (Exception ex)
             {
-                Mod.log.Error($"Telex: Publish '{type}' failed: {ex.Message}");
+                Mod.log.Error($"Cyberstat: Publish '{type}' failed: {ex.Message}");
                 DisconnectHttp();
             }
         }
@@ -808,7 +808,7 @@ namespace Telex
 
             Game.UI.NameSystem activeNameSystem = null;
             try { activeNameSystem = base.World.GetExistingSystemManaged<Game.UI.NameSystem>(); }
-            catch (Exception ex) { Mod.log.Error($"[Telex] Failed to retrieve NameSystem: {ex.Message}"); }
+            catch (Exception ex) { Mod.log.Error($"[Cyberstat] Failed to retrieve NameSystem: {ex.Message}"); }
 
             foreach (var citizenEntity in citizens)
             {
@@ -931,7 +931,7 @@ namespace Telex
 
             Game.UI.NameSystem activeNameSystem = null;
             try { activeNameSystem = base.World.GetExistingSystemManaged<Game.UI.NameSystem>(); }
-            catch (Exception ex) { Mod.log.Error($"[Telex] Failed to retrieve NameSystem: {ex.Message}"); }
+            catch (Exception ex) { Mod.log.Error($"[Cyberstat] Failed to retrieve NameSystem: {ex.Message}"); }
 
             foreach (var buildingEntity in buildings)
             {
