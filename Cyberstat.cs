@@ -266,19 +266,10 @@ namespace Cyberstat
             m_CurrentDateString = currentDate.ToString("yyy-dd-MM'T'HH:mm:ss.fff'Z'");
             m_CurrentAbsoluteDay = TimeSystem.GetDay(m_SimulationSystem.frameIndex, timeData);
 
-
             m_TaxSystem.Update();
             var taxRates = m_TaxSystem.GetTaxRates();
             var residentialTaxes = GenerateResidentialTaxSnapshot(taxRates);
             var resourceSnapshots = GenerateResourceSnapshot(taxRates);
-
-            var cargoSnapshot = new Dictionary<string, int>
-            {
-                { "train", m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTrain) },
-                { "ship", m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountShip) },
-                { "airplane", m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountAirplane) },
-                { "truck", m_CityStatisticsSystem.GetStatisticValue(StatisticType.CargoCountTruck) }
-            };
 
             var economics = new
             {
@@ -322,7 +313,6 @@ namespace Cyberstat
 
             Publish("economy", economics);
             Publish("resources", resourceSnapshots);
-            Publish("cargo", cargoSnapshot);
             Publish("citizens", GenerateCitizenSnapshot());
             Publish("buildings", GenerateBuildingSnapshot());
             Publish("roads", GenerateRoadSnapshot());
