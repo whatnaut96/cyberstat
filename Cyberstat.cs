@@ -48,6 +48,9 @@ namespace Cyberstat
         private CommercialDemandSystem m_CommercialDemandSystem;
         private IndustrialDemandSystem m_IndustrialDemandSystem;
         private ResidentialDemandSystem m_ResidentialDemandSystem;
+        private CityProductionStatisticSystem m_CityProductionStatisticSystem;
+        private CountCityStoredResourceSystem m_CountCityStoredResourceSystem;
+        private CityProductionCapacityCalculationSystem m_CityProductionCapacityCalculationSystem;
         private EntityQuery m_BuildingQuery;
         private EntityQuery m_DemandParameterQuery;
         private CityServiceBudgetSystem m_CityServiceBudgetSystem;
@@ -114,6 +117,9 @@ namespace Cyberstat
             m_CommercialDemandSystem = World.GetOrCreateSystemManaged<CommercialDemandSystem>();
             m_IndustrialDemandSystem = World.GetOrCreateSystemManaged<IndustrialDemandSystem>();
             m_ResidentialDemandSystem = World.GetOrCreateSystemManaged<ResidentialDemandSystem>();
+            m_CityProductionStatisticSystem = World.GetOrCreateSystemManaged<CityProductionStatisticSystem>();
+            m_CountCityStoredResourceSystem = World.GetOrCreateSystemManaged<CountCityStoredResourceSystem>();
+            m_CityProductionCapacityCalculationSystem = World.GetOrCreateSystemManaged<CityProductionCapacityCalculationSystem>();
 
             m_BuildingQuery = GetEntityQuery(
                 ComponentType.ReadOnly<Game.Buildings.Building>(),
@@ -313,6 +319,7 @@ namespace Cyberstat
 
             Publish("economy", economics);
             Publish("resources", resourceSnapshots);
+            Publish("production", GenerateProductionSnapshot());
             Publish("citizens", GenerateCitizenSnapshot());
             Publish("buildings", GenerateBuildingSnapshot());
             Publish("roads", GenerateRoadSnapshot());
@@ -362,6 +369,86 @@ namespace Cyberstat
 
                     return result;
                 }
+
+        private object GenerateProductionSnapshot()
+        {
+            var usageArray = m_CityProductionStatisticSystem.GetCityResourceUsages();
+            var consumptionProductionArray = m_CityProductionStatisticSystem.GetConsumptionProductions();
+            var storedArray = m_CountCityStoredResourceSystem.GetCityStoredResources();
+            var productionChains = m_CityProductionStatisticSystem.GetProductionChains();
+            var resources = new Dictionary<string, object>();
+
+            foreach (var resource in kTradeResources)
+            {
+                int idx = EconomyUtils.GetResourceIndex(resource);
+                if (idx < 0) continue;
+
+                var usage = idx < usageArray.Length
+                    ? usageArray[idx]
+                    : default;
+
+                int2 consumptionProduction = idx < consumptionProductionArray.Length
+                    ? consumptionProductionArray[idx]
+                    : default;
+
+                int stored = idx < storedArray.Length
+                    ? storedArray[idx]
+                    : 0;
+
+                int production = consumptionProduction.y;
+                int consumption = consumptionProduction.x;
+
+                resources[resource.ToString().ToLower()] = new
+                {
+                    resource = resource.ToString(),
+                    resource_index = idx,
+                    consumption = consumption,
+                    production = production,
+                    surplus = production - consumption,
+                    stored = stored,
+                    production_capacity = m_CityProductionCapacityCalculationSystem.GetProductionCapacity(resource),
+                    usage = new
+                    {
+                        service_upkeep = usage[CityProductionStatisticSystem.CityResourceUsage.Consumer.ServiceUpkeep],
+                        citizens = usage[CityProductionStatisticSystem.CityResourceUsage.Consumer.Citizens],
+                        import_export = usage[CityProductionStatisticSystem.CityResourceUsage.Consumer.ImportExport],
+                        retail = usage[CityProductionStatisticSystem.CityResourceUsage.Consumer.Retail],
+                        commercial = usage[CityProductionStatisticSystem.CityResourceUsage.Consumer.Commercial],
+                        industrial = usage[CityProductionStatisticSystem.CityResourceUsage.Consumer.Industrial],
+                        office = usage[CityProductionStatisticSystem.CityResourceUsage.Consumer.Office],
+                        heating = usage[CityProductionStatisticSystem.CityResourceUsage.Consumer.Heating],
+                        level_up = usage[CityProductionStatisticSystem.CityResourceUsage.Consumer.LevelUp]
+                    }
+                };
+            }
+
+            var chains = new List<object>();
+            if (productionChains.IsCreated)
+            {
+                var chainPairs = productionChains.GetKeyValueArrays(Allocator.Temp);
+                for (int i = 0; i < chainPairs.Length; i++)
+                {
+                    var chain = chainPairs.Keys[i];
+                    var value = chainPairs.Values[i];
+                    chains.Add(new
+                    {
+                        consume_1 = chain.m_Consume1.ToString(),
+                        consume_2 = chain.m_Consume2.ToString(),
+                        produce = chain.m_Produce.ToString(),
+                        consume_1_amount = value.m_Consume1,
+                        consume_2_amount = value.m_Consume2,
+                        produce_amount = value.m_Produce
+                    });
+                }
+                chainPairs.Dispose();
+            }
+
+            return new
+            {
+                resources,
+                production_chains = chains
+            };
+        }
 
                 private List<object> GenerateRoadSnapshot()
                 {
