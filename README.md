@@ -59,7 +59,5 @@ The dummy sink starts an HTTPS server on `127.0.0.1:2145`, generates a self-sign
 
 - `Cyberstat.cs` - mod entry point, simulation system, snapshot generation, and HTTP publisher
 - `Cyberstat.csproj` - C# project file and Cities: Skylines II assembly references
-- `mod.json` - local mod metadata
 - `justfile` - build, install, and dummy sink commands
 - `scripts/dummy_sink.py` - local HTTPS receiver for telemetry payloads
-- `bak/` - sample captured payloads
