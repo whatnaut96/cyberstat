@@ -15,7 +15,9 @@ using Game.Simulation;
 using Game.Tools;
 using Game.Routes;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Text;
+using System.Threading;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
@@ -65,7 +67,11 @@ namespace Cyberstat
         private const uint kFramesPerHour = 262144 / 24;
         private bool m_IsFirstFrame = true;
 
+        private const int kPublishQueueCapacity = 32;
+
         private HttpClient m_HttpClient;
+        private BlockingCollection<PublishJob> m_PublishQueue;
+        private Thread m_PublishThread;
         private string m_ProcessorBaseUrl;
         private string m_ProcessorAddress;
         private int m_ProcessorPort;
@@ -168,18 +174,26 @@ namespace Cyberstat
                 ComponentType.Exclude<Temp>()
             );
 
-            m_ProcessorAddress = Environment.GetEnvironmentVariable("BROADWAY_PROCESSOR_ADDRESS") ?? "localhost";
-            int.TryParse(Environment.GetEnvironmentVariable("BROADWAY_PROCESSOR_PORT"), out int port);
+            m_ProcessorAddress = Environment.GetEnvironmentVariable("CYBERSTAT_PROCESSOR_ADDRESS") ?? "localhost";
+            int.TryParse(Environment.GetEnvironmentVariable("CYBERSTAT_PROCESSOR_PORT"), out int port);
             m_ProcessorPort = port > 0 ? port : 2145;
 
             m_LastHour = uint.MaxValue;
 
-            try { ConnectHttp(); }
-            catch { Mod.log.Warn("Cyberstat: Early connect failed, will retry on first publish"); }
+            m_PublishQueue = new BlockingCollection<PublishJob>(kPublishQueueCapacity);
+            m_PublishThread = new Thread(PublishWorker)
+            {
+                IsBackground = true,
+                Name = "Cyberstat Publisher"
+            };
+            m_PublishThread.Start();
         }
 
         protected override void OnDestroy()
         {
+            try { m_PublishQueue?.CompleteAdding(); } catch {}
+            try { m_PublishThread?.Join(2000); } catch {}
+
             DisconnectHttp();
             base.OnDestroy();
         }
@@ -194,7 +208,11 @@ namespace Cyberstat
                 {
                     ServerCertificateCustomValidationCallback = (msg, cert, chain, errors) => true // accept self-signed for now
                 };
-                m_HttpClient = new HttpClient(handler) { BaseAddress = new Uri(m_ProcessorBaseUrl) };
+                m_HttpClient = new HttpClient(handler)
+                {
+                    BaseAddress = new Uri(m_ProcessorBaseUrl),
+                    Timeout = TimeSpan.FromSeconds(10)
+                };
                 Mod.log.Info($"Cyberstat: HTTP client ready for {m_ProcessorBaseUrl}");
             }
             catch (Exception ex)
@@ -212,13 +230,59 @@ namespace Cyberstat
 
         private void Publish(string type, object payload)
         {
+            if (m_PublishQueue == null || m_PublishQueue.IsAddingCompleted)
+            {
+                Mod.log.Warn($"Cyberstat: publisher stopped, dropping '{type}'");
+                return;
+            }
+
+            var job = new PublishJob
+            {
+                Type = type,
+                CityName = m_CityConfigurationSystem.cityName,
+                Date = m_CurrentDateString,
+                AbsoluteDay = m_CurrentAbsoluteDay,
+                Payload = payload
+            };
+
+            try
+            {
+                if (!m_PublishQueue.TryAdd(job))
+                {
+                    Mod.log.Warn($"Cyberstat: publish queue full, dropping '{type}'");
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                Mod.log.Warn($"Cyberstat: publisher stopped, dropping '{type}'");
+            }
+        }
+
+        private sealed class PublishJob
+        {
+            public string Type;
+            public string CityName;
+            public string Date;
+            public int AbsoluteDay;
+            public object Payload;
+        }
+
+        private void PublishWorker()
+        {
+            foreach (var job in m_PublishQueue.GetConsumingEnumerable())
+            {
+                PublishBlocking(job);
+            }
+        }
+
+        private void PublishBlocking(PublishJob job)
+        {
             if (m_HttpClient == null)
             {
-                Mod.log.Warn("Cyberstat: HTTP client not ready, attempting reconnect...");
                 ConnectHttp();
                 if (m_HttpClient == null)
                 {
-                    Mod.log.Error("Cyberstat: Reconnect failed, dropping payload");
+                    Mod.log.Error($"Cyberstat: HTTP unavailable, dropping '{job.Type}'");
                     return;
                 }
             }
@@ -227,26 +291,26 @@ namespace Cyberstat
             {
                 var envelope = new
                 {
-                    city_name = m_CityConfigurationSystem.cityName,
-                    date = m_CurrentDateString,
-                    absolute_day = m_CurrentAbsoluteDay,
-                    data = payload
+                    city_name = job.CityName,
+                    date = job.Date,
+                    absolute_day = job.AbsoluteDay,
+                    data = job.Payload
                 };
 
                 var json = JsonConvert.SerializeObject(envelope);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
                 var response = m_HttpClient
-                    .PostAsync($"?program=cyberstat&type={type}", content)
+                    .PostAsync($"?program=cyberstat&payload_type={job.Type}", content)
                     .GetAwaiter().GetResult();
 
                 if (!response.IsSuccessStatusCode)
-                    Mod.log.Error($"Cyberstat: Publish '{type}' failed, status {(int)response.StatusCode}");
+                    Mod.log.Error($"Cyberstat: Publish '{job.Type}' failed, status {(int)response.StatusCode}");
                 else
-                    Mod.log.Info($"Cyberstat: Published '{type}' ({json.Length} bytes)");
+                    Mod.log.Info($"Cyberstat: Published '{job.Type}' ({json.Length} bytes)");
             }
             catch (Exception ex)
             {
-                Mod.log.Error($"Cyberstat: Publish '{type}' failed: {ex.Message}");
+                Mod.log.Error($"Cyberstat: Publish '{job.Type}' failed: {ex.Message}");
                 DisconnectHttp();
             }
         }
